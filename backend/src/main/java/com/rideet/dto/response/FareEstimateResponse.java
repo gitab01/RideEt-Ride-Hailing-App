@@ -1,0 +1,16 @@
+package com.rideet.dto.response;
+
+import lombok.Builder;
+import lombok.Data;
+
+@Data
+@Builder
+public class FareEstimateResponse {
+    private Double estimatedFare;
+    private Double distanceKm;
+    private Integer durationMinutes;
+    private Double surgeMultiplier;
+    private Double baseFare;
+    private Double distanceFare;
+    private Double timeFare;
+}

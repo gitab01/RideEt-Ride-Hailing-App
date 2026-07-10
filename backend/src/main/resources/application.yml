@@ -1,0 +1,73 @@
+spring:
+  application:
+    name: rideet-backend
+
+  datasource:
+    url: jdbc:sqlserver://localhost:1433;databaseName=rideet;encrypt=true;trustServerCertificate=true
+    username: ${DB_USERNAME:sa}
+    password: ${DB_PASSWORD:YourStrong@Passw0rd}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.SQLServerDialect
+        format_sql: true
+    open-in-view: false
+
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: 587
+    username: ${MAIL_USERNAME:noreply@rideet.com}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api/v1
+
+# JWT Configuration
+jwt:
+  secret: ${JWT_SECRET:RideEtSuperSecretKeyForJWTTokenGenerationMinimum256BitsLong}
+  expiration: 86400000       # 24 hours in ms
+  refresh-expiration: 604800000  # 7 days in ms
+
+# Stripe
+stripe:
+  secret-key: ${STRIPE_SECRET_KEY:sk_test_your_stripe_secret_key}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET:whsec_your_webhook_secret}
+
+# Google Maps
+google:
+  maps:
+    api-key: ${GOOGLE_MAPS_API_KEY:your_google_maps_api_key}
+
+# OTP Settings
+otp:
+  expiration-minutes: 5
+  length: 6
+
+# Fare Configuration
+fare:
+  base-fare: 2.50
+  per-km-rate: 1.20
+  per-minute-rate: 0.20
+  minimum-fare: 5.00
+  surge-multiplier: 1.0
+
+# File upload
+spring.servlet.multipart:
+  max-file-size: 10MB
+  max-request-size: 10MB
+
+logging:
+  level:
+    com.rideet: DEBUG
+    org.springframework.security: INFO
+    org.springframework.web.socket: INFO

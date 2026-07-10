@@ -1,0 +1,49 @@
+# Maven / Spring Boot
+backend/target/
+backend/.mvn/
+*.class
+*.jar
+*.war
+
+# Node / React
+admin-dashboard/node_modules/
+admin-dashboard/dist/
+admin-dashboard/.env
+
+# Flutter
+user-app/.dart_tool/
+user-app/.flutter-plugins
+user-app/.flutter-plugins-dependencies
+user-app/build/
+user-app/.packages
+driver-app/.dart_tool/
+driver-app/.flutter-plugins
+driver-app/.flutter-plugins-dependencies
+driver-app/build/
+driver-app/.packages
+
+# Environment / Secrets
+.env
+*.env
+application-prod.yml
+*.p12
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Docker volumes
+mssql_data/
+
+# Logs
+*.log
+logs/

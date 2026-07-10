@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #f5f5f5; }
+}
+
+@layer components {
+  .card { @apply bg-white rounded-xl shadow-sm border border-gray-100 p-5; }
+  .btn-primary { @apply bg-primary text-white px-4 py-2 rounded-lg font-medium hover:bg-primary-600 transition-colors; }
+  .btn-danger  { @apply bg-danger  text-white px-4 py-2 rounded-lg font-medium hover:opacity-90 transition-opacity; }
+  .badge-online    { @apply bg-green-100  text-green-800  text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-offline   { @apply bg-gray-100   text-gray-600   text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-on-trip   { @apply bg-blue-100   text-blue-800   text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-suspended { @apply bg-red-100    text-red-800    text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-completed { @apply bg-green-100  text-green-800  text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-cancelled { @apply bg-red-100    text-red-800    text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-in-progress { @apply bg-blue-100 text-blue-800   text-xs font-semibold px-2 py-1 rounded-full; }
+  .badge-searching { @apply bg-yellow-100 text-yellow-800 text-xs font-semibold px-2 py-1 rounded-full; }
+}
