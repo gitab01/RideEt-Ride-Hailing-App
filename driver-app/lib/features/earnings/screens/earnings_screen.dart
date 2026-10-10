@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:dio/dio.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/theme/app_theme.dart';
 
@@ -138,7 +137,7 @@ class _TripRow extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [const BoxShadow(blurRadius: 3, color: Colors.black08)],
+        boxShadow: const [BoxShadow(blurRadius: 3, color: Colors.black12)],
       ),
       child: Row(
         children: [

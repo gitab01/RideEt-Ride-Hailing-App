@@ -49,7 +49,10 @@ class AppRouter {
           rideId: state.pathParameters['rideId']!,
         ),
       ),
-      GoRoute(path: '/payment', builder: (_, __) => const PaymentScreen()),
+      GoRoute(
+        path: '/payment/:rideId',
+        builder: (_, state) => PaymentScreen(rideId: state.pathParameters['rideId']!),
+      ),
     ],
   );
 }

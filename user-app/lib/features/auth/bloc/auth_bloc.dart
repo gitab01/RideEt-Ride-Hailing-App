@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../../core/network/api_client.dart';
+import '../../../core/network/websocket_service.dart';
 
 // Events
 abstract class AuthEvent extends Equatable {
@@ -66,6 +67,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   Future<void> _onCheckAuth(AuthCheckRequested event, Emitter<AuthState> emit) async {
     final token = await _storage.read(key: 'access_token');
     if (token != null) {
+      await WebSocketService().connect();
       emit(AuthAuthenticated({'token': token}));
     } else {
       emit(AuthUnauthenticated());
@@ -81,10 +83,10 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       });
       final data = response.data['data'];
       await _api.saveTokens(data['accessToken'], data['refreshToken']);
+      await WebSocketService().connect();
       emit(AuthAuthenticated(data));
     } on DioException catch (e) {
-      final message = e.response?.data['message'] ?? 'Login failed';
-      emit(AuthError(message));
+      emit(AuthError(_message(e, 'Login failed')));
     }
   }
 
@@ -94,15 +96,25 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       final response = await _api.dio.post('/auth/register', data: event.data);
       final data = response.data['data'];
       await _api.saveTokens(data['accessToken'], data['refreshToken']);
+      await WebSocketService().connect();
       emit(AuthAuthenticated(data));
     } on DioException catch (e) {
-      final message = e.response?.data['message'] ?? 'Registration failed';
-      emit(AuthError(message));
+      emit(AuthError(_message(e, 'Registration failed')));
     }
   }
 
   Future<void> _onLogout(AuthLogoutRequested event, Emitter<AuthState> emit) async {
+    WebSocketService().disconnect();
     await _api.clearTokens();
     emit(AuthUnauthenticated());
+  }
+
+  static String _message(DioException e, String fallback) {
+    final data = e.response?.data;
+    if (data is Map && data['message'] != null) return data['message'].toString();
+    if (data is String && data.isNotEmpty) return data.substring(0, data.length.clamp(0, 120));
+    return e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.connectionError
+        ? 'Cannot reach the RideEt server'
+        : fallback;
   }
 }

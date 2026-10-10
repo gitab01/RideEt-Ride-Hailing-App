@@ -19,56 +19,77 @@ class RideTrackingScreen extends StatefulWidget {
 class _RideTrackingScreenState extends State<RideTrackingScreen> {
   GoogleMapController? _mapController;
   final Set<Marker> _markers = {};
-  final Set<Polyline> _polylines = {};
-  LatLng _driverLocation = const LatLng(0, 0);
-  Timer? _refreshTimer;
   Map<String, dynamic>? _rideData;
+  StreamSubscription<RideUpdate>? _pushes;
+  Timer? _fallbackRefresh;
+  int _driversContacted = 0;
+
+  /// Addis Ababa centre; the camera moves to the ride as soon as it is known.
+  static const CameraPosition _initialCamera =
+      CameraPosition(target: LatLng(8.9950, 38.7800), zoom: 14);
 
   @override
   void initState() {
     super.initState();
-    _startTracking();
-  }
-
-  void _startTracking() {
     context.read<BookingBloc>().add(RideStatusRefreshed(widget.rideId));
-    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) {
-        context.read<BookingBloc>().add(RideStatusRefreshed(widget.rideId));
-      }
-    });
 
-    // WebSocket for real-time driver location
-    WebSocketService().subscribeToDriverLocation(
-      widget.rideId,
-      (msg) {
-        // Parse driver location from message
-        if (mounted) {
-          setState(() {
-            _driverLocation = LatLng(
-              (msg['latitude'] as num?)?.toDouble() ?? 0,
-              (msg['longitude'] as num?)?.toDouble() ?? 0,
-            );
-            _updateDriverMarker();
-          });
-        }
-      },
+    // Pushes drive the UI; this poll only recovers a missed frame.
+    _fallbackRefresh = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) { if (mounted) context.read<BookingBloc>().add(RideStatusRefreshed(widget.rideId)); },
     );
+
+    _pushes = WebSocketService().updates.listen(_onPush);
   }
 
-  void _updateDriverMarker() {
-    _markers.removeWhere((m) => m.markerId.value == 'driver');
+  void _onPush(RideUpdate update) {
+    if (update.eventType == 'LOCATION') {
+      _applyDriverPosition(update);
+      return;
+    }
+    if (update.eventType == 'SEARCHING_DRIVERS') {
+      setState(() => _driversContacted =
+          (update.data['driversContacted'] as num?)?.toInt() ?? _driversContacted);
+    }
+  }
+
+  void _applyDriverPosition(RideUpdate update) {
+    final lat = update.latitude;
+    final lng = update.longitude;
+    if (lat == null || lng == null) return;
+    final position = LatLng(lat, lng);
+    setState(() {
+      _markers.removeWhere((m) => m.markerId.value == 'driver');
+      _markers.add(Marker(
+        markerId: const MarkerId('driver'),
+        position: position,
+        flat: true,
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        infoWindow: const InfoWindow(title: 'Your driver'),
+      ));
+    });
+    _mapController
+        ?.animateCamera(CameraUpdate.newLatLngZoom(position, 15));
+  }
+
+  void _centerOnPickup(Map<String, dynamic> ride) {
+    final lat = (ride['pickupLatitude'] as num?)?.toDouble();
+    final lng = (ride['pickupLongitude'] as num?)?.toDouble();
+    if (lat == null || lng == null) return;
+    _markers.removeWhere((m) => m.markerId.value == 'pickup');
     _markers.add(Marker(
-      markerId: const MarkerId('driver'),
-      position: _driverLocation,
-      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      infoWindow: const InfoWindow(title: 'Your Driver'),
+      markerId: const MarkerId('pickup'),
+      position: LatLng(lat, lng),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+      infoWindow: InfoWindow(title: ride['pickupAddress']?.toString() ?? 'Pickup'),
     ));
+    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(LatLng(lat, lng), 14));
   }
 
   @override
   void dispose() {
-    _refreshTimer?.cancel();
+    _pushes?.cancel();
+    _fallbackRefresh?.cancel();
     WebSocketService().unsubscribeFromDriverLocation();
     super.dispose();
   }
@@ -77,10 +98,11 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
     switch (status) {
       case 'SEARCHING': return 'Finding your driver...';
       case 'DRIVER_ASSIGNED': return 'Driver is on the way';
-      case 'DRIVER_ARRIVED': return 'Driver has arrived!';
-      case 'IN_PROGRESS': return 'On your way';
-      case 'COMPLETED': return 'Arrived!';
+      case 'DRIVER_ARRIVED': return 'Your driver has arrived';
+      case 'IN_PROGRESS': return 'On the way to your destination';
+      case 'COMPLETED': return 'Arrived';
       case 'CANCELLED': return 'Ride cancelled';
+      case 'NO_DRIVER_FOUND': return 'No driver accepted nearby';
       default: return 'Processing...';
     }
   }
@@ -90,31 +112,44 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
     return BlocConsumer<BookingBloc, BookingState>(
       listener: (context, state) {
         if (state is RideActive) {
-          setState(() => _rideData = state.ride);
-          if (state.ride['status'] == 'DRIVER_ASSIGNED' ||
-              state.ride['status'] == 'IN_PROGRESS') {
-            // Subscribe to driver location
-          }
+          final driver = state.ride['driverUserId']?.toString();
+          if (driver != null) WebSocketService().subscribeToDriverLocation(driver);
+          setState(() {
+            _rideData = state.ride;
+            _centerOnPickup(state.ride);
+          });
+        }
+        if (state is RideSearching) {
+          setState(() => _driversContacted = state.driversContacted);
         }
         if (state is RideCompleted) {
-          _refreshTimer?.cancel();
+          _fallbackRefresh?.cancel();
+          WebSocketService().unsubscribeFromDriverLocation();
           context.go('/ride-complete/${widget.rideId}');
+        }
+        if (state is BookingError) {
+          _fallbackRefresh?.cancel();
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(state.message), backgroundColor: AppTheme.errorColor));
+          context.go('/home');
         }
       },
       builder: (context, state) {
-        final ride = state is RideActive ? state.ride : _rideData;
+        final ride = state is RideActive
+            ? state.ride
+            : (state is RideSearching ? null : _rideData);
+        final searching = state is RideSearching || ride?['status'] == 'SEARCHING';
 
         return Scaffold(
           body: Stack(
             children: [
               GoogleMap(
-                onMapCreated: (c) => _mapController = c,
-                initialCameraPosition: const CameraPosition(
-                  target: LatLng(37.7749, -122.4194),
-                  zoom: 15,
-                ),
+                onMapCreated: (c) {
+                  _mapController = c;
+                  if (_rideData != null) _centerOnPickup(_rideData!);
+                },
+                initialCameraPosition: _initialCamera,
                 markers: _markers,
-                polylines: _polylines,
                 myLocationEnabled: true,
                 zoomControlsEnabled: false,
               ),
@@ -133,8 +168,7 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
                           color: AppTheme.primaryColor.withOpacity(0.1),
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.directions_car,
-                            color: AppTheme.primaryColor),
+                        child: const Icon(Icons.directions_car, color: AppTheme.primaryColor),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -142,22 +176,26 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _getStatusText(ride?['status']),
+                              searching
+                                  ? 'Finding your driver...'
+                                  : _getStatusText(ride?['status']),
                               style: const TextStyle(
                                   fontWeight: FontWeight.bold, fontSize: 16),
                             ),
-                            if (ride?['driverName'] != null)
+                            if (searching && _driversContacted > 0)
+                              Text('Contacted $_driversContacted driver(s) so far',
+                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                            if (!searching && ride?['driverName'] != null)
                               Text(ride!['driverName'],
                                   style: TextStyle(color: Colors.grey.shade600)),
                           ],
                         ),
                       ),
-                      if (ride?['status'] == 'DRIVER_ASSIGNED' ||
-                          ride?['status'] == 'SEARCHING')
+                      if (searching || ride?['status'] == 'DRIVER_ASSIGNED')
                         TextButton(
                           onPressed: () {
-                            context.read<BookingBloc>().add(
-                                RideCancelled(widget.rideId, reason: 'Changed my mind'));
+                            context.read<BookingBloc>()
+                                .add(RideCancelled(widget.rideId, reason: 'Changed my mind'));
                             context.go('/home');
                           },
                           child: const Text('Cancel',
@@ -169,15 +207,11 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
               ),
 
               // Driver info card at bottom
-              if (ride?['driverName'] != null)
+              if (ride != null && ride['driverName'] != null)
                 Positioned(
                   bottom: 0, left: 0, right: 0,
-                  child: _DriverInfoCard(ride: ride!),
+                  child: _DriverInfoCard(ride: ride),
                 ),
-
-              // Loading indicator
-              if (ride?['status'] == 'SEARCHING')
-                const Center(child: _SearchingAnimation()),
             ],
           ),
         );
@@ -192,6 +226,10 @@ class _DriverInfoCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final rating = (ride['driverRating'] as num?)?.toDouble() ?? 5.0;
+    final awaitingBoarding =
+        ride['status'] == 'DRIVER_ASSIGNED' || ride['status'] == 'DRIVER_ARRIVED';
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: const BoxDecoration(
@@ -222,19 +260,11 @@ class _DriverInfoCard extends StatelessWidget {
                       children: [
                         const Icon(Icons.star, size: 14, color: AppTheme.accentColor),
                         const SizedBox(width: 4),
-                        Text('${ride['driverRating'] ?? '5.0'}',
+                        Text(rating.toStringAsFixed(1),
                             style: TextStyle(color: Colors.grey.shade600)),
                       ],
                     ),
                   ],
-                ),
-              ),
-              // Call button
-              CircleAvatar(
-                backgroundColor: AppTheme.successColor,
-                child: IconButton(
-                  icon: const Icon(Icons.phone, color: Colors.white, size: 20),
-                  onPressed: () {},
                 ),
               ),
             ],
@@ -249,7 +279,9 @@ class _DriverInfoCard extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('${ride['vehicleColor'] ?? ''} ${ride['vehicleMake'] ?? ''}'),
+                Text([ride['vehicleColor'], ride['vehicleMake'], ride['vehicleModel']]
+                    .whereType<String>()
+                    .join(' ')),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
@@ -263,9 +295,10 @@ class _DriverInfoCard extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          // Ride start OTP (shown to passenger)
-          if (ride['status'] == 'DRIVER_ARRIVED')
+
+          // The code only reaches the passenger, and only until they board.
+          if (awaitingBoarding && ride['rideStartOtp'] != null) ...[
+            const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -278,67 +311,19 @@ class _DriverInfoCard extends StatelessWidget {
                 children: [
                   const Icon(Icons.lock_open, color: AppTheme.primaryColor),
                   const SizedBox(width: 8),
-                  const Text('Show driver your OTP:',
+                  const Text('Show your driver this code:',
                       style: TextStyle(fontWeight: FontWeight.w500)),
                   const SizedBox(width: 8),
-                  Text('••••••',
+                  Text(ride['rideStartOtp'].toString(),
                       style: const TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.bold,
-                          letterSpacing: 4, color: AppTheme.primaryColor)),
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 4,
+                          color: AppTheme.primaryColor)),
                 ],
               ),
             ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SearchingAnimation extends StatefulWidget {
-  const _SearchingAnimation();
-
-  @override
-  State<_SearchingAnimation> createState() => _SearchingAnimationState();
-}
-
-class _SearchingAnimationState extends State<_SearchingAnimation>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 1),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      margin: const EdgeInsets.only(top: 140),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [const BoxShadow(blurRadius: 10, color: Colors.black12)],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FadeTransition(
-            opacity: _ctrl,
-            child: const Icon(Icons.directions_car, color: AppTheme.primaryColor),
-          ),
-          const SizedBox(width: 12),
-          const Text('Finding your driver...', style: TextStyle(fontWeight: FontWeight.w500)),
+          ],
         ],
       ),
     );

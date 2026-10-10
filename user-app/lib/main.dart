@@ -12,7 +12,12 @@ void main() async {
 
   // Initialize Stripe
   Stripe.publishableKey = AppConfig.stripePublishableKey;
-  await Stripe.instance.applySettings();
+  try {
+    await Stripe.instance.applySettings();
+  } catch (_) {
+    // No real publishable key yet. The payment screen reports the failure when a rider
+    // actually tries to charge a card, instead of the app dying on launch.
+  }
 
   // Setup dependency injection
   await setupInjection();

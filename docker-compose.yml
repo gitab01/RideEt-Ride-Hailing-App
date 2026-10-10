@@ -25,13 +25,16 @@ services:
       - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      DB_HOST: mssql
-      DB_NAME: rideet
+      # The app resolves its datasource from DB_URL alone; DB_HOST/DB_NAME are not read.
+      DB_URL: "jdbc:sqlserver://mssql:1433;databaseName=rideet;encrypt=true;trustServerCertificate=true"
       DB_USERNAME: sa
       DB_PASSWORD: "YourStrong@Passw0rd"
+      STORAGE_DIR: /data/uploads
       JWT_SECRET: "RideEtSuperSecretKeyForJWTTokenGenerationMinimum256BitsLong"
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_placeholder}
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-placeholder}
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       mssql:
         condition: service_healthy
@@ -43,9 +46,10 @@ services:
       dockerfile: Dockerfile
     container_name: rideet-admin
     ports:
-      - "3000:80"
+      - "8081:80"
     depends_on:
       - backend
 
 volumes:
   mssql_data:
+  uploads:

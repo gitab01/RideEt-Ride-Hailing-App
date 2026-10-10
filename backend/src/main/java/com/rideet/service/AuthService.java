@@ -6,6 +6,7 @@ import com.rideet.dto.request.LoginRequest;
 import com.rideet.dto.request.RegisterRequest;
 import com.rideet.dto.response.AuthResponse;
 import com.rideet.exception.BadRequestException;
+import com.rideet.repository.DriverRepository;
 import com.rideet.repository.UserRepository;
 import com.rideet.security.JwtService;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AuthService {
 
     private final UserRepository userRepository;
+    private final DriverRepository driverRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
@@ -82,6 +84,9 @@ public class AuthService {
     }
 
     private AuthResponse buildAuthResponse(User user, String accessToken, String refreshToken) {
+        boolean onboarded = user.getRole() != UserRole.DRIVER
+                || driverRepository.existsByUserId(user.getId());
+
         return AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
@@ -92,6 +97,7 @@ public class AuthService {
                 .lastName(user.getLastName())
                 .role(user.getRole())
                 .profilePictureUrl(user.getProfilePictureUrl())
+                .driverOnboarded(onboarded)
                 .build();
     }
 }

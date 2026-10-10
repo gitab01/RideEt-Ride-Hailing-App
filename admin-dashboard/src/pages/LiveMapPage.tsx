@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Client } from '@stomp/stompjs'
-import SockJS from 'sockjs-client'
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
 import L from 'leaflet'
 import { adminApi } from '../api/client'
@@ -42,8 +41,9 @@ export default function LiveMapPage() {
 
   useEffect(() => {
     const token = localStorage.getItem('admin_token')
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const client = new Client({
-      webSocketFactory: () => new SockJS('/api/v1/ws'),
+      brokerURL: `${wsProto}//${window.location.host}/api/v1/ws`,
       connectHeaders: { Authorization: `Bearer ${token}` },
       onConnect: () => {
         client.subscribe('/topic/admin/live-rides', (msg) => {
@@ -76,7 +76,7 @@ export default function LiveMapPage() {
 
       <div className="card p-0 overflow-hidden" style={{ height: 'calc(100vh - 160px)' }}>
         <MapContainer
-          center={[37.7749, -122.4194]}
+          center={[8.9806, 38.7578]}
           zoom={12}
           style={{ height: '100%', width: '100%' }}
         >

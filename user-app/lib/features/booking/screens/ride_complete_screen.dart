@@ -42,11 +42,16 @@ class _RideCompleteScreenState extends State<RideCompleteScreen> {
       setState(() => _submitted = true);
     } on DioException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.response?.data['message'] ?? 'Failed to submit rating')));
+        final data = e.response?.data;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(data is Map && data['message'] != null
+                ? data['message'].toString()
+                : 'Failed to submit rating')));
       }
     }
   }
+
+  String _money(num? value) => value == null ? '-' : 'ETB ${value.toStringAsFixed(2)}';
 
   @override
   Widget build(BuildContext context) {
@@ -76,24 +81,21 @@ class _RideCompleteScreenState extends State<RideCompleteScreen> {
 
               // Fare summary
               if (_rideData != null) ...[
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [const BoxShadow(blurRadius: 8, color: Colors.black12)],
+                _FareSummary(ride: _rideData!, money: _money),
+                const SizedBox(height: 16),
+                if ((_rideData!['paymentMethod'] ?? '') == 'CASH')
+                  Text(
+                    'Pay the driver ${_money((_rideData!['actualFare'] as num?) ??
+                        (_rideData!['estimatedFare'] as num?))} in cash.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey.shade700),
+                  )
+                else
+                  ElevatedButton.icon(
+                    onPressed: () => context.go('/payment/${widget.rideId}'),
+                    icon: const Icon(Icons.credit_card),
+                    label: const Text('Go to payment'),
                   ),
-                  child: Column(
-                    children: [
-                      _SummaryRow('Distance', '${_rideData!['distanceKm']?.toStringAsFixed(1) ?? '-'} km'),
-                      _SummaryRow('Duration', '${_rideData!['durationMinutes'] ?? '-'} min'),
-                      const Divider(),
-                      _SummaryRow('Total Fare',
-                          '\$${_rideData!['actualFare']?.toStringAsFixed(2) ?? '-'}',
-                          bold: true),
-                    ],
-                  ),
-                ),
                 const SizedBox(height: 32),
               ],
 
@@ -146,6 +148,38 @@ class _RideCompleteScreenState extends State<RideCompleteScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _FareSummary extends StatelessWidget {
+  final Map<String, dynamic> ride;
+  final String Function(num?) money;
+
+  const _FareSummary({required this.ride, required this.money});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [const BoxShadow(blurRadius: 8, color: Colors.black12)],
+      ),
+      child: Column(
+        children: [
+          _SummaryRow('Distance',
+              '${(ride['distanceKm'] as num?)?.toStringAsFixed(1) ?? '-'} km'),
+          _SummaryRow('Duration', '${(ride['durationMinutes'] as num?)?.toInt() ?? '-'} min'),
+          _SummaryRow('Payment', (ride['paymentMethod'] ?? '-').toString()),
+          const Divider(),
+          _SummaryRow(
+              'Total Fare',
+              money((ride['actualFare'] as num?) ?? (ride['estimatedFare'] as num?)),
+              bold: true),
+        ],
       ),
     );
   }

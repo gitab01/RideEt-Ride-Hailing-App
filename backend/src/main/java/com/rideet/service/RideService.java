@@ -1,9 +1,12 @@
 package com.rideet.service;
 
+import com.rideet.common.GeoUtil;
 import com.rideet.domain.entity.Driver;
+import com.rideet.domain.entity.DriverLocation;
 import com.rideet.domain.entity.Ride;
 import com.rideet.domain.entity.User;
 import com.rideet.domain.enums.DriverStatus;
+import com.rideet.domain.enums.PaymentMethod;
 import com.rideet.domain.enums.RideStatus;
 import com.rideet.dto.request.RatingRequest;
 import com.rideet.dto.request.RideRequest;
@@ -11,54 +14,85 @@ import com.rideet.dto.response.FareEstimateResponse;
 import com.rideet.dto.response.RideResponse;
 import com.rideet.exception.BadRequestException;
 import com.rideet.exception.ResourceNotFoundException;
+import com.rideet.mapper.RideViewMapper;
+import com.rideet.matching.DriverLocationIndex;
+import com.rideet.matching.DriverPresenceCache;
+import com.rideet.matching.LocationWriteBuffer;
+import com.rideet.matching.MatchingService;
+import com.rideet.matching.RideStateMachine;
+import com.rideet.repository.DriverLocationRepository;
 import com.rideet.repository.DriverRepository;
 import com.rideet.repository.RideRepository;
 import com.rideet.repository.UserRepository;
 import com.rideet.websocket.RideWebSocketService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Random;
+import java.util.Map;
 
+/**
+ * Ride lifecycle. Every status change goes through {@link RideStateMachine}, so the
+ * database holds both the current state (a column) and the story (an event table), and
+ * no client can claim a transition the server would accept blindly.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RideService {
 
+    private static final List<RideStatus> ACTIVE_STATUSES = List.of(
+            RideStatus.REQUESTED, RideStatus.SEARCHING,
+            RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVED, RideStatus.IN_PROGRESS);
+
+    /** A driver must be within this of the pickup before a trip can start. */
+    private static final double PICKUP_PROXIMITY_KM = 0.35;
+
     private final RideRepository rideRepository;
     private final DriverRepository driverRepository;
+    private final DriverLocationRepository driverLocationRepository;
     private final UserRepository userRepository;
     private final FareCalculationService fareCalculationService;
     private final RideWebSocketService rideWebSocketService;
     private final NotificationService notificationService;
+    private final RideStateMachine stateMachine;
+    private final MatchingService matchingService;
+    private final DriverLocationIndex locationIndex;
+    private final DriverPresenceCache presenceCache;
+    private final LocationWriteBuffer locationBuffer;
+    private final RideViewMapper rideViewMapper;
+    private final SecureRandom random = new SecureRandom();
+
+    @Value("${fare.max-deviation-ratio:0.25}")
+    private double maxDeviationRatio;
 
     @Transactional
-    public RideResponse requestRide(Long passengerId, RideRequest request) {
-        User passenger = userRepository.findById(passengerId)
+    public RideResponse requestRide(Long passengerUserId, RideRequest request) {
+        User passenger = userRepository.findById(passengerUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("Passenger not found"));
 
-        // Check no active ride exists
-        List<RideStatus> activeStatuses = List.of(
-                RideStatus.REQUESTED, RideStatus.SEARCHING,
-                RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVED, RideStatus.IN_PROGRESS
-        );
-        rideRepository.findFirstByPassengerIdAndStatusIn(passengerId, activeStatuses)
+        rideRepository.findFirstByPassengerIdAndStatusIn(passengerIdOf(passenger), ACTIVE_STATUSES)
                 .ifPresent(r -> { throw new BadRequestException("You already have an active ride"); });
 
-        // Calculate fare estimate
         double distance = fareCalculationService.calculateDistanceKm(
                 request.getPickupLatitude(), request.getPickupLongitude(),
-                request.getDestinationLatitude(), request.getDestinationLongitude()
-        );
+                request.getDestinationLatitude(), request.getDestinationLongitude());
         int duration = fareCalculationService.estimateDurationMinutes(distance);
-        FareEstimateResponse fareEstimate = fareCalculationService.calculateFare(distance, duration);
+        FareEstimateResponse estimate = fareCalculationService.calculateFare(distance, duration);
+
+        // Nothing debits wallet_balance yet, so accepting it here would quietly bill the
+        // ride through the card path instead.
+        if (request.getPaymentMethod() == PaymentMethod.WALLET) {
+            throw new BadRequestException("Wallet payments are not enabled yet — choose cash or card");
+        }
 
         Ride ride = Ride.builder()
                 .passenger(passenger)
@@ -70,273 +104,364 @@ public class RideService {
                 .destinationLongitude(request.getDestinationLongitude())
                 .vehicleType(request.getVehicleType())
                 .paymentMethod(request.getPaymentMethod())
-                .estimatedFare(fareEstimate.getEstimatedFare())
-                .distanceKm(distance)
+                .estimatedFare(estimate.getEstimatedFare())
+                .distanceKm(Math.round(distance * 100.0) / 100.0)
                 .durationMinutes(duration)
-                .status(RideStatus.SEARCHING)
+                .surgeMultiplier(estimate.getSurgeMultiplier())
+                .status(RideStatus.REQUESTED)
                 .build();
-
         rideRepository.save(ride);
-        log.info("Ride requested: {} by passenger {}", ride.getId(), passengerId);
 
-        // Async driver matching
-        matchDriver(ride);
+        stateMachine.transition(ride, RideStatus.SEARCHING, RideStateMachine.ACTOR_PASSENGER, "ride requested");
+        rideRepository.save(ride);
 
-        return mapToResponse(ride);
+        matchingService.startMatching(ride);
+        rideWebSocketService.broadcastToAdmin("RIDE_REQUESTED", Map.of(
+                "rideId", ride.getId(),
+                "pickupLatitude", ride.getPickupLatitude(),
+                "pickupLongitude", ride.getPickupLongitude()));
+        log.info("Ride {} requested by user {}", ride.getId(), passengerUserId);
+
+        return toResponse(ride, passengerUserId);
     }
 
-    @Async
-    public void matchDriver(Ride ride) {
-        List<Driver> nearbyDrivers = driverRepository.findNearbyOnlineDrivers(
-                ride.getPickupLatitude(), ride.getPickupLongitude(),
-                10.0, ride.getVehicleType().name()
-        );
-
-        if (nearbyDrivers.isEmpty()) {
-            ride.setStatus(RideStatus.NO_DRIVER_FOUND);
-            rideRepository.save(ride);
-            rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "NO_DRIVER_FOUND", ride.getId());
-            return;
-        }
-
-        // Notify up to 3 nearest drivers
-        nearbyDrivers.stream().limit(3).forEach(driver ->
-                rideWebSocketService.notifyDriver(driver.getId(), "RIDE_REQUEST", ride.getId())
-        );
-    }
-
+    /**
+     * A driver takes the ride. Delegates the winner election to the matching engine, then
+     * tells the passenger who is coming.
+     */
     @Transactional
     public RideResponse acceptRide(Long driverId, Long rideId) {
-        Driver driver = driverRepository.findById(driverId)
-                .orElseThrow(() -> new ResourceNotFoundException("Driver not found"));
-
-        Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
-
-        if (ride.getStatus() != RideStatus.SEARCHING) {
-            throw new BadRequestException("Ride is no longer available");
-        }
-        if (driver.getStatus() != DriverStatus.ONLINE) {
-            throw new BadRequestException("Driver is not available");
-        }
-
-        ride.setDriver(driver);
-        ride.setStatus(RideStatus.DRIVER_ASSIGNED);
-        ride.setDriverAssignedAt(LocalDateTime.now());
-        ride.setRideStartOtp(generateOtp());
-        driver.setStatus(DriverStatus.ON_TRIP);
-
-        rideRepository.save(ride);
-        driverRepository.save(driver);
-
-        rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "DRIVER_ASSIGNED", rideId);
-        notificationService.sendPushNotification(
-                ride.getPassenger().getId(),
-                "Driver Found!",
-                driver.getUser().getFullName() + " is on the way. " + driver.getVehicleColor() + " " + driver.getVehicleMake()
-        );
-
-        return mapToResponse(ride);
+        Ride ride = matchingService.accept(driverId, rideId);
+        return toResponse(ride, ride.getPassenger().getId());
     }
 
     @Transactional
-    public RideResponse markDriverArrived(Long driverId, Long rideId) {
+    public void declineOffer(Long driverId, Long rideId) {
+        matchingService.decline(driverId, rideId);
+    }
+
+    @Transactional
+    public RideResponse markDriverArrived(Long driverId, Long rideId, Long viewerUserId) {
         Ride ride = getRideForDriver(driverId, rideId);
-        if (ride.getStatus() != RideStatus.DRIVER_ASSIGNED) {
-            throw new BadRequestException("Invalid ride status");
-        }
-        ride.setStatus(RideStatus.DRIVER_ARRIVED);
+        stateMachine.transition(ride, RideStatus.DRIVER_ARRIVED, RideStateMachine.ACTOR_DRIVER, "at pickup");
         ride.setDriverArrivedAt(LocalDateTime.now());
         rideRepository.save(ride);
 
-        rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "DRIVER_ARRIVED", rideId);
-        notificationService.sendPushNotification(ride.getPassenger().getId(), "Driver Arrived", "Your driver has arrived at the pickup location.");
-
-        return mapToResponse(ride);
+        rideWebSocketService.toPassenger(ride.getPassenger().getId(), "DRIVER_ARRIVED", rideId,
+                toResponse(ride, ride.getPassenger().getId()));
+        notificationService.sendPushNotification(ride.getPassenger().getId(), "Driver Arrived",
+                "Your driver is waiting at the pickup point.");
+        return toResponse(ride, viewerUserId);
     }
 
+    /**
+     * Trip start is driver-initiated but server-validated: the OTP proves the passenger
+     * handed over the code, and the driver's live position proves they are actually at the
+     * pickup point. Without the second check a spoofed client could start a fare anywhere.
+     */
     @Transactional
     public RideResponse startRide(Long driverId, Long rideId, String otp) {
         Ride ride = getRideForDriver(driverId, rideId);
-        if (ride.getStatus() != RideStatus.DRIVER_ARRIVED) {
-            throw new BadRequestException("Driver must be at pickup location");
+        if (ride.getRideStartOtp() == null || !ride.getRideStartOtp().equals(otp)) {
+            throw new BadRequestException("Invalid start code");
         }
-        if (!ride.getRideStartOtp().equals(otp)) {
-            throw new BadRequestException("Invalid OTP");
-        }
+        requireDriverAtPickup(driverId, ride);
 
-        ride.setStatus(RideStatus.IN_PROGRESS);
+        stateMachine.transition(ride, RideStatus.IN_PROGRESS, RideStateMachine.ACTOR_DRIVER, "trip started");
         ride.setStartedAt(LocalDateTime.now());
         rideRepository.save(ride);
 
-        rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "RIDE_STARTED", rideId);
-        return mapToResponse(ride);
+        rideWebSocketService.toPassenger(ride.getPassenger().getId(), "RIDE_STARTED", rideId,
+                toResponse(ride, ride.getPassenger().getId()));
+        return toResponse(ride, ride.getDriver().getUser().getId());
     }
 
     @Transactional
     public RideResponse completeRide(Long driverId, Long rideId) {
         Ride ride = getRideForDriver(driverId, rideId);
-        if (ride.getStatus() != RideStatus.IN_PROGRESS) {
-            throw new BadRequestException("Ride is not in progress");
-        }
+        stateMachine.transition(ride, RideStatus.COMPLETED, RideStateMachine.ACTOR_DRIVER, "trip finished");
 
-        ride.setStatus(RideStatus.COMPLETED);
-        ride.setCompletedAt(LocalDateTime.now());
-        ride.setActualFare(ride.getEstimatedFare());
+        LocalDateTime endedAt = LocalDateTime.now();
+        locationBuffer.flushNow();
+        ActualTrip actual = measureActualTrip(ride, driverId, endedAt);
+
+        FareEstimateResponse recomputed = fareCalculationService.calculateFare(
+                actual.distanceKm(), actual.durationMinutes());
+        double finalFare = capToFareWindow(recomputed.getEstimatedFare(), ride.getEstimatedFare());
+
+        ride.setActualFare(finalFare);
+        ride.setDistanceKm(Math.round(actual.distanceKm() * 100.0) / 100.0);
+        ride.setDurationMinutes(actual.durationMinutes());
+        ride.setCompletedAt(endedAt);
 
         Driver driver = ride.getDriver();
         driver.setStatus(DriverStatus.ONLINE);
         driver.setTotalRides(driver.getTotalRides() + 1);
-        driver.setTotalEarnings(driver.getTotalEarnings() + ride.getActualFare());
-
-        rideRepository.save(ride);
+        driver.setTotalEarnings(round2(driver.getTotalEarnings() + finalFare));
         driverRepository.save(driver);
+        presenceCache.statusChanged(driver.getUser().getId(), DriverStatus.ONLINE);
+        if (actual.distanceKm() > 0 && driver.getCurrentLatitude() != null) {
+            locationIndex.put(driver.getId(), driver.getUser().getId(),
+                    driver.getCurrentLatitude(), driver.getCurrentLongitude(), driver.getVehicleType());
+        }
+        rideRepository.save(ride);
 
-        rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "RIDE_COMPLETED", rideId);
-        notificationService.sendPushNotification(
-                ride.getPassenger().getId(),
-                "Ride Completed",
-                "Your ride is complete. Total fare: $" + ride.getActualFare()
-        );
+        rideWebSocketService.toPassenger(ride.getPassenger().getId(), "RIDE_COMPLETED", rideId,
+                toResponse(ride, ride.getPassenger().getId()));
+        notificationService.sendPushNotification(ride.getPassenger().getId(), "Ride Completed",
+                "Your ride is complete. Total fare: " + finalFare);
+        log.info("Ride {} completed: quoted {}, charged {} over {} km",
+                rideId, ride.getEstimatedFare(), finalFare, ride.getDistanceKm());
 
-        return mapToResponse(ride);
+        return toResponse(ride, driver.getUser().getId());
     }
 
+    /**
+     * @param actorUserId the passenger's or driver's app-user id requesting the cancellation
+     * @param actor       {@link RideStateMachine#ACTOR_PASSENGER} or {@link RideStateMachine#ACTOR_DRIVER}
+     */
     @Transactional
-    public RideResponse cancelRide(Long userId, Long rideId, String reason, String cancelledBy) {
+    public RideResponse cancelRide(Long actorUserId, Long rideId, String reason, String actor) {
         Ride ride = rideRepository.findById(rideId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
 
-        List<RideStatus> cancellableStatuses = List.of(
-                RideStatus.SEARCHING, RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVED
-        );
-        if (!cancellableStatuses.contains(ride.getStatus())) {
+        boolean isPassenger = ride.getPassenger().getId().equals(actorUserId);
+        boolean isDriver = ride.getDriver() != null
+                && ride.getDriver().getUser().getId().equals(actorUserId);
+        if (!isPassenger && !isDriver) {
+            throw new BadRequestException("Only the rider or the assigned driver can cancel this ride");
+        }
+
+        boolean driverQuitMidRide = RideStateMachine.ACTOR_DRIVER.equals(actor) && ride.getDriver() != null;
+
+        if (driverQuitMidRide) {
+            // A driver backing out is the rider's problem to solve, not the rider's loss:
+            // hand the ride straight back to the pool rather than cancelling it.
+            Driver withdrawn = releaseDriver(ride);
+            matchingService.closeRound(rideId, "DRIVER_CANCELLED");
+            stateMachine.transition(ride, RideStatus.SEARCHING, actor,
+                    "driver cancelled" + (reason == null ? "" : ": " + reason));
+            ride.setDriver(null);
+            ride.setDriverAssignedAt(null);
+            ride.setDriverArrivedAt(null);
+            ride.setRideStartOtp(null);
+            rideRepository.save(ride);
+            matchingService.startMatching(ride);
+
+            rideWebSocketService.toPassenger(ride.getPassenger().getId(), "DRIVER_CANCELLED", rideId,
+                    Map.of("reason", reason == null ? "" : reason, "rematching", true));
+            log.info("Ride {} returned to the pool after driver {} cancelled", rideId, withdrawn.getId());
+            return toResponse(ride, actorUserId);
+        }
+
+        if (!RideStateMachine.allowedFrom(ride.getStatus()).contains(RideStatus.CANCELLED)) {
             throw new BadRequestException("Ride cannot be cancelled at this stage");
         }
 
-        ride.setStatus(RideStatus.CANCELLED);
+        matchingService.closeRound(rideId, "CANCELLED");
+        Long driverUserId = ride.getDriver() == null ? null : ride.getDriver().getUser().getId();
+        if (ride.getDriver() != null) releaseDriver(ride);
+
+        stateMachine.transition(ride, RideStatus.CANCELLED, actor, reason);
         ride.setCancelledAt(LocalDateTime.now());
         ride.setCancellationReason(reason);
-        ride.setCancelledBy(cancelledBy);
-
-        if (ride.getDriver() != null) {
-            Driver driver = ride.getDriver();
-            driver.setStatus(DriverStatus.ONLINE);
-            driverRepository.save(driver);
-        }
-
+        ride.setCancelledBy(actor);
         rideRepository.save(ride);
 
-        if ("PASSENGER".equals(cancelledBy) && ride.getDriver() != null) {
-            rideWebSocketService.notifyDriver(ride.getDriver().getId(), "RIDE_CANCELLED", rideId);
-        } else if ("DRIVER".equals(cancelledBy)) {
-            rideWebSocketService.notifyPassenger(ride.getPassenger().getId(), "RIDE_CANCELLED", rideId);
-            matchDriver(ride); // Try to find another driver
+        Map<String, Object> cancelled = Map.of(
+                "by", actor, "reason", reason == null ? "" : reason);
+        if (!isPassenger) {
+            rideWebSocketService.toPassenger(ride.getPassenger().getId(), "RIDE_CANCELLED", rideId, cancelled);
         }
-
-        return mapToResponse(ride);
+        if (driverUserId != null) {
+            rideWebSocketService.toDriver(driverUserId, "RIDE_CANCELLED", rideId, cancelled);
+        }
+        return toResponse(ride, actorUserId);
     }
 
+    /** Put a driver back on the market and stop them being offered work they cannot take. */
+    private Driver releaseDriver(Ride ride) {
+        Driver driver = ride.getDriver();
+        if (driver == null) return null;
+        driver.setStatus(DriverStatus.ONLINE);
+        driverRepository.save(driver);
+        presenceCache.statusChanged(driver.getUser().getId(), DriverStatus.ONLINE);
+        if (driver.getCurrentLatitude() != null && driver.getCurrentLongitude() != null) {
+            locationIndex.put(driver.getId(), driver.getUser().getId(),
+                    driver.getCurrentLatitude(), driver.getCurrentLongitude(), driver.getVehicleType());
+        }
+        return driver;
+    }
+
+    /** Two-sided feedback: either party rates the other once, after the ride is complete. */
     @Transactional
-    public void rateDriver(Long passengerId, Long rideId, RatingRequest request) {
+    public void rateRide(Long actorUserId, Long rideId, RatingRequest request) {
         Ride ride = rideRepository.findById(rideId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
 
-        if (!ride.getPassenger().getId().equals(passengerId)) {
-            throw new BadRequestException("Unauthorized");
-        }
         if (ride.getStatus() != RideStatus.COMPLETED) {
-            throw new BadRequestException("Ride must be completed before rating");
+            throw new BadRequestException("Only a completed ride can be rated");
         }
-        if (ride.getPassengerRating() != null) {
+        boolean byPassenger = ride.getPassenger().getId().equals(actorUserId);
+        boolean byDriver = ride.getDriver() != null && ride.getDriver().getUser().getId().equals(actorUserId);
+        if (!byPassenger && !byDriver) {
+            throw new BadRequestException("Only a participant can rate this ride");
+        }
+        if (byPassenger && ride.getPassengerRating() != null) {
+            throw new BadRequestException("Rating already submitted");
+        }
+        if (byDriver && ride.getDriverRating() != null) {
             throw new BadRequestException("Rating already submitted");
         }
 
-        ride.setPassengerRating(request.getRating());
-        ride.setPassengerReview(request.getReview());
+        if (byPassenger) {
+            ride.setPassengerRating(request.getRating());
+            ride.setPassengerReview(request.getReview());
+            Driver driver = ride.getDriver();
+            driver.setRating(round2(((driver.getRating() * driver.getTotalRatings()) + request.getRating())
+                    / (driver.getTotalRatings() + 1)));
+            driver.setTotalRatings(driver.getTotalRatings() + 1);
+            driverRepository.save(driver);
+        } else {
+            ride.setDriverRating(request.getRating());
+            ride.setDriverReview(request.getReview());
+            User passenger = ride.getPassenger();
+            passenger.setRating(round2(((passenger.getRating() * passenger.getTotalRatings()) + request.getRating())
+                    / (passenger.getTotalRatings() + 1)));
+            passenger.setTotalRatings(passenger.getTotalRatings() + 1);
+            userRepository.save(passenger);
+        }
         rideRepository.save(ride);
-
-        // Update driver average rating
-        Driver driver = ride.getDriver();
-        double newRating = ((driver.getRating() * driver.getTotalRatings()) + request.getRating())
-                / (driver.getTotalRatings() + 1);
-        driver.setRating(Math.round(newRating * 10.0) / 10.0);
-        driver.setTotalRatings(driver.getTotalRatings() + 1);
-        driverRepository.save(driver);
     }
 
     public FareEstimateResponse estimateFare(double pickupLat, double pickupLng,
-                                              double destLat, double destLng) {
+                                             double destLat, double destLng) {
         double distance = fareCalculationService.calculateDistanceKm(pickupLat, pickupLng, destLat, destLng);
         int duration = fareCalculationService.estimateDurationMinutes(distance);
         return fareCalculationService.calculateFare(distance, duration);
     }
 
-    public Page<RideResponse> getPassengerHistory(Long passengerId, Pageable pageable) {
-        return rideRepository.findByPassengerIdOrderByCreatedAtDesc(passengerId, pageable)
-                .map(this::mapToResponse);
+    @Transactional(readOnly = true)
+    public Page<RideResponse> getPassengerHistory(Long passengerUserId, Pageable pageable) {
+        return rideRepository.findByPassengerIdOrderByCreatedAtDesc(passengerUserId, pageable)
+                .map(ride -> toResponse(ride, passengerUserId));
     }
 
+    @Transactional(readOnly = true)
     public Page<RideResponse> getDriverHistory(Long driverId, Pageable pageable) {
         return rideRepository.findByDriverIdOrderByCreatedAtDesc(driverId, pageable)
-                .map(this::mapToResponse);
+                .map(ride -> toResponse(ride, null));
     }
 
-    public RideResponse getRideById(Long rideId) {
-        return rideRepository.findById(rideId)
-                .map(this::mapToResponse)
+    /**
+     * Authoritative state for a reconnecting client. A participant gets the full view;
+     * anyone else is refused, because a ride's pickup and drop-off points are personal data.
+     */
+    @Transactional(readOnly = true)
+    public RideResponse getRideForUser(Long userId, Long rideId) {
+        Ride ride = rideRepository.findById(rideId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
+        boolean participant = ride.getPassenger().getId().equals(userId)
+                || (ride.getDriver() != null && ride.getDriver().getUser().getId().equals(userId));
+        if (!participant) {
+            throw new BadRequestException("You are not a participant of this ride");
+        }
+        return toResponse(ride, userId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<RideResponse> getActiveRideForUser(Long userId) {
+        return rideRepository.findByStatusIn(ACTIVE_STATUSES).stream()
+                .filter(r -> r.getPassenger().getId().equals(userId)
+                        || (r.getDriver() != null && r.getDriver().getUser().getId().equals(userId)))
+                .map(r -> toResponse(r, userId))
+                .toList();
     }
 
     private Ride getRideForDriver(Long driverId, Long rideId) {
         Ride ride = rideRepository.findById(rideId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
         if (ride.getDriver() == null || !ride.getDriver().getId().equals(driverId)) {
-            throw new BadRequestException("Unauthorized");
+            throw new BadRequestException("This ride is not assigned to you");
         }
         return ride;
     }
 
-    private String generateOtp() {
-        return String.format("%06d", new Random().nextInt(999999));
+    private void requireDriverAtPickup(Long driverId, Ride ride) {
+        double[] position = livePositionOf(driverId, ride);
+        if (position == null) {
+            throw new BadRequestException("No live location for this driver; keep the app in the foreground");
+        }
+        double off = GeoUtil.kmBetween(ride.getPickupLatitude(), ride.getPickupLongitude(),
+                position[0], position[1]);
+        if (off > PICKUP_PROXIMITY_KM) {
+            throw new BadRequestException(
+                    String.format("You must be within %d m of the pickup point", (int) (PICKUP_PROXIMITY_KM * 1000)));
+        }
     }
 
-    private RideResponse mapToResponse(Ride ride) {
-        RideResponse.RideResponseBuilder builder = RideResponse.builder()
-                .id(ride.getId())
-                .passengerId(ride.getPassenger().getId())
-                .passengerName(ride.getPassenger().getFullName())
-                .pickupAddress(ride.getPickupAddress())
-                .pickupLatitude(ride.getPickupLatitude())
-                .pickupLongitude(ride.getPickupLongitude())
-                .destinationAddress(ride.getDestinationAddress())
-                .destinationLatitude(ride.getDestinationLatitude())
-                .destinationLongitude(ride.getDestinationLongitude())
-                .vehicleType(ride.getVehicleType())
-                .status(ride.getStatus())
-                .estimatedFare(ride.getEstimatedFare())
-                .actualFare(ride.getActualFare())
-                .distanceKm(ride.getDistanceKm())
-                .durationMinutes(ride.getDurationMinutes())
-                .paymentMethod(ride.getPaymentMethod())
-                .requestedAt(ride.getRequestedAt())
-                .driverAssignedAt(ride.getDriverAssignedAt())
-                .startedAt(ride.getStartedAt())
-                .completedAt(ride.getCompletedAt());
+    /** Live index first (fresh to within one ping), durable last-known position as fallback. */
+    private double[] livePositionOf(Long driverId, Ride ride) {
+        return locationIndex.placementOf(driverId)
+                .map(p -> new double[]{p.latitude(), p.longitude()})
+                .orElseGet(() -> {
+                    Driver d = ride.getDriver();
+                    if (d == null || d.getCurrentLatitude() == null) return null;
+                    return new double[]{d.getCurrentLatitude(), d.getCurrentLongitude()};
+                });
+    }
 
-        if (ride.getDriver() != null) {
-            Driver driver = ride.getDriver();
-            builder.driverId(driver.getId())
-                    .driverName(driver.getUser().getFullName())
-                    .driverPhone(driver.getUser().getPhone())
-                    .driverProfilePicture(driver.getUser().getProfilePictureUrl())
-                    .driverRating(driver.getRating())
-                    .vehicleMake(driver.getVehicleMake())
-                    .vehicleModel(driver.getVehicleModel())
-                    .licensePlate(driver.getLicensePlate())
-                    .vehicleColor(driver.getVehicleColor());
+    /**
+     * Actual distance travelled, summed from the flushed position trail. Falls back to the
+     * straight-line route when a trip was too short to have produced pings.
+     */
+    private ActualTrip measureActualTrip(Ride ride, Long driverId, LocalDateTime endedAt) {
+        int durationMinutes = ride.getStartedAt() == null ? 0
+                : Math.max(1, (int) Math.ceil(Duration.between(ride.getStartedAt(), endedAt).toMinutes()));
+
+        List<DriverLocation> trail = driverLocationRepository
+                .findByDriverIdAndRecordedAtBetweenOrderByRecordedAtAsc(driverId, ride.getStartedAt(), endedAt);
+
+        double travelled = 0.0;
+        for (int i = 1; i < trail.size(); i++) {
+            DriverLocation a = trail.get(i - 1);
+            DriverLocation b = trail.get(i);
+            travelled += GeoUtil.kmBetween(a.getLatitude(), a.getLongitude(), b.getLatitude(), b.getLongitude());
         }
+        if (travelled <= 0.0) {
+            travelled = GeoUtil.kmBetween(ride.getPickupLatitude(), ride.getPickupLongitude(),
+                    ride.getDestinationLatitude(), ride.getDestinationLongitude());
+        }
+        return new ActualTrip(Math.round(travelled * 100.0) / 100.0, durationMinutes);
+    }
 
-        return builder.build();
+    /**
+     * Price certainty both ways: the driver is paid for the road actually driven, but the
+     * passenger is never charged more than the agreed window around the quote.
+     */
+    private double capToFareWindow(double computed, Double quoted) {
+        if (quoted == null || quoted <= 0) return round2(computed);
+        double ceiling = quoted * (1 + maxDeviationRatio);
+        double floor = quoted * (1 - maxDeviationRatio);
+        return round2(Math.min(Math.max(computed, floor), ceiling));
+    }
+
+    private Long passengerIdOf(User user) {
+        return user.getId();
+    }
+
+    private static double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
+    private record ActualTrip(double distanceKm, int durationMinutes) {
+    }
+
+    /**
+     * @param viewerUserId the requesting user; the start code is only ever sent to the
+     *                     passenger, since a driver who could read it would not need to ask.
+     */
+    public RideResponse toResponse(Ride ride, Long viewerUserId) {
+        return rideViewMapper.toResponse(ride, viewerUserId);
     }
 }

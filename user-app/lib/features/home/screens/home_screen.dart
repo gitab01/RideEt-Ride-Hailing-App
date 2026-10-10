@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../../booking/bloc/booking_bloc.dart';
 import '../../../core/theme/app_theme.dart';
+
+/// Addis Ababa, where RideEt operates and where the emulator has no fix.
+const LatLng _addisCenter = LatLng(8.9950, 38.7800);
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,13 +19,14 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   GoogleMapController? _mapController;
-  LatLng _currentLocation = const LatLng(0, 0);
+  LatLng _currentLocation = _addisCenter;
   bool _locationLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _loadLocation();
+    context.read<BookingBloc>().add(ActiveRideLoaded());
   }
 
   Future<void> _loadLocation() async {
@@ -33,17 +39,20 @@ class _HomeScreenState extends State<HomeScreen> {
       if (permission == LocationPermission.denied) return;
     }
 
-    Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high);
-
-    setState(() {
-      _currentLocation = LatLng(position.latitude, position.longitude);
-      _locationLoaded = true;
-    });
-
-    _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(_currentLocation, 15),
-    );
+    try {
+      final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
+      if (!mounted) return;
+      setState(() {
+        _currentLocation = LatLng(position.latitude, position.longitude);
+        _locationLoaded = true;
+      });
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(_currentLocation, 15),
+      );
+    } catch (_) {
+      // No fix (emulator, denied permission): the Addis default stays on screen.
+    }
   }
 
   @override

@@ -2,10 +2,13 @@ package com.rideet.controller;
 
 import com.rideet.domain.entity.Driver;
 import com.rideet.domain.entity.User;
+import com.rideet.dto.request.DriverRegisterRequest;
 import com.rideet.dto.request.LocationUpdateRequest;
 import com.rideet.dto.request.RatingRequest;
 import com.rideet.dto.response.ApiResponse;
+import com.rideet.dto.response.DriverResponse;
 import com.rideet.dto.response.RideResponse;
+import com.rideet.matching.RideStateMachine;
 import com.rideet.service.DriverService;
 import com.rideet.service.RideService;
 import jakarta.validation.Valid;
@@ -18,30 +21,56 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/driver")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('DRIVER')")
 public class DriverController {
 
     private final DriverService driverService;
     private final RideService rideService;
 
+    /** Onboarding: turn a DRIVER account into a matchable driver with a vehicle. */
+    @PostMapping("/register")
+    public ResponseEntity<ApiResponse<DriverResponse>> register(
+            @AuthenticationPrincipal User user,
+            @Valid @RequestBody DriverRegisterRequest request) {
+
+        return ResponseEntity.ok(ApiResponse.success("Driver profile created",
+                driverService.register(user.getId(), request)));
+    }
+
+    @PostMapping("/documents")
+    public ResponseEntity<ApiResponse<DriverResponse>> submitDocuments(
+            @AuthenticationPrincipal User user,
+            @RequestParam String driverLicenseUrl,
+            @RequestParam String vehicleRegistrationUrl,
+            @RequestParam(required = false) String insuranceUrl) {
+
+        return ResponseEntity.ok(ApiResponse.success("Documents submitted",
+                driverService.submitDocuments(user.getId(), driverLicenseUrl,
+                        vehicleRegistrationUrl, insuranceUrl)));
+    }
+
+    @GetMapping("/profile")
+    public ResponseEntity<ApiResponse<DriverResponse>> getProfile(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.success(driverService.getProfile(user.getId())));
+    }
+
     @PostMapping("/online")
-    @PreAuthorize("hasRole('DRIVER')")
-    public ResponseEntity<ApiResponse<Driver>> goOnline(@AuthenticationPrincipal User user) {
-        Driver driver = driverService.goOnline(user.getId());
-        return ResponseEntity.ok(ApiResponse.success("Now online", driver));
+    public ResponseEntity<ApiResponse<DriverResponse>> goOnline(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.success("Now online", driverService.goOnline(user.getId())));
     }
 
     @PostMapping("/offline")
-    @PreAuthorize("hasRole('DRIVER')")
-    public ResponseEntity<ApiResponse<Driver>> goOffline(@AuthenticationPrincipal User user) {
-        Driver driver = driverService.goOffline(user.getId());
-        return ResponseEntity.ok(ApiResponse.success("Now offline", driver));
+    public ResponseEntity<ApiResponse<DriverResponse>> goOffline(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.success("Now offline", driverService.goOffline(user.getId())));
     }
 
+    /** REST fallback for location; the socket path is preferred while the app is connected. */
     @PostMapping("/location")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<Void>> updateLocation(
             @AuthenticationPrincipal User user,
             @Valid @RequestBody LocationUpdateRequest request) {
@@ -51,64 +80,92 @@ public class DriverController {
     }
 
     @PostMapping("/rides/{rideId}/accept")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<RideResponse>> acceptRide(
             @AuthenticationPrincipal User user,
             @PathVariable Long rideId) {
 
         Driver driver = driverService.getDriverByUserId(user.getId());
-        RideResponse ride = rideService.acceptRide(driver.getId(), rideId);
-        return ResponseEntity.ok(ApiResponse.success("Ride accepted", ride));
+        return ResponseEntity.ok(ApiResponse.success("Ride accepted",
+                rideService.acceptRide(driver.getId(), rideId)));
+    }
+
+    @PostMapping("/rides/{rideId}/decline")
+    public ResponseEntity<ApiResponse<Void>> declineRide(
+            @AuthenticationPrincipal User user,
+            @PathVariable Long rideId) {
+
+        Driver driver = driverService.getDriverByUserId(user.getId());
+        rideService.declineOffer(driver.getId(), rideId);
+        return ResponseEntity.ok(ApiResponse.success("Offer declined", null));
     }
 
     @PostMapping("/rides/{rideId}/arrived")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<RideResponse>> markArrived(
             @AuthenticationPrincipal User user,
             @PathVariable Long rideId) {
 
         Driver driver = driverService.getDriverByUserId(user.getId());
-        RideResponse ride = rideService.markDriverArrived(driver.getId(), rideId);
-        return ResponseEntity.ok(ApiResponse.success("Arrival confirmed", ride));
+        return ResponseEntity.ok(ApiResponse.success("Arrival confirmed",
+                rideService.markDriverArrived(driver.getId(), rideId, user.getId())));
     }
 
     @PostMapping("/rides/{rideId}/start")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<RideResponse>> startRide(
             @AuthenticationPrincipal User user,
             @PathVariable Long rideId,
             @RequestParam String otp) {
 
         Driver driver = driverService.getDriverByUserId(user.getId());
-        RideResponse ride = rideService.startRide(driver.getId(), rideId, otp);
-        return ResponseEntity.ok(ApiResponse.success("Ride started", ride));
+        return ResponseEntity.ok(ApiResponse.success("Ride started",
+                rideService.startRide(driver.getId(), rideId, otp)));
     }
 
     @PostMapping("/rides/{rideId}/complete")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<RideResponse>> completeRide(
             @AuthenticationPrincipal User user,
             @PathVariable Long rideId) {
 
         Driver driver = driverService.getDriverByUserId(user.getId());
-        RideResponse ride = rideService.completeRide(driver.getId(), rideId);
-        return ResponseEntity.ok(ApiResponse.success("Ride completed", ride));
+        return ResponseEntity.ok(ApiResponse.success("Ride completed",
+                rideService.completeRide(driver.getId(), rideId)));
     }
 
     @PostMapping("/rides/{rideId}/cancel")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<RideResponse>> cancelRide(
             @AuthenticationPrincipal User user,
             @PathVariable Long rideId,
             @RequestParam(required = false) String reason) {
 
-        Driver driver = driverService.getDriverByUserId(user.getId());
-        RideResponse ride = rideService.cancelRide(driver.getId(), rideId, reason, "DRIVER");
-        return ResponseEntity.ok(ApiResponse.success("Ride cancelled", ride));
+        // cancelRide authorises by app-user id, so the driver's own id is what proves
+        // they are the assigned party — not their driver row id.
+        return ResponseEntity.ok(ApiResponse.success("Ride cancelled",
+                rideService.cancelRide(user.getId(), rideId, reason, RideStateMachine.ACTOR_DRIVER)));
+    }
+
+    @PostMapping("/rides/{rideId}/rate")
+    public ResponseEntity<ApiResponse<Void>> ratePassenger(
+            @AuthenticationPrincipal User user,
+            @PathVariable Long rideId,
+            @Valid @RequestBody RatingRequest request) {
+
+        rideService.rateRide(user.getId(), rideId, request);
+        return ResponseEntity.ok(ApiResponse.success("Rating submitted", null));
+    }
+
+    @GetMapping("/rides/active")
+    public ResponseEntity<ApiResponse<List<RideResponse>>> getActiveRides(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.success(rideService.getActiveRideForUser(user.getId())));
+    }
+
+    @GetMapping("/rides/{rideId}")
+    public ResponseEntity<ApiResponse<RideResponse>> getRide(
+            @AuthenticationPrincipal User user,
+            @PathVariable Long rideId) {
+
+        return ResponseEntity.ok(ApiResponse.success(rideService.getRideForUser(user.getId(), rideId)));
     }
 
     @GetMapping("/rides/history")
-    @PreAuthorize("hasRole('DRIVER')")
     public ResponseEntity<ApiResponse<Page<RideResponse>>> getHistory(
             @AuthenticationPrincipal User user,
             @PageableDefault(size = 10) Pageable pageable) {
@@ -116,12 +173,5 @@ public class DriverController {
         Driver driver = driverService.getDriverByUserId(user.getId());
         return ResponseEntity.ok(ApiResponse.success(
                 rideService.getDriverHistory(driver.getId(), pageable)));
-    }
-
-    @GetMapping("/profile")
-    @PreAuthorize("hasRole('DRIVER')")
-    public ResponseEntity<ApiResponse<Driver>> getProfile(@AuthenticationPrincipal User user) {
-        Driver driver = driverService.getDriverByUserId(user.getId());
-        return ResponseEntity.ok(ApiResponse.success(driver));
     }
 }

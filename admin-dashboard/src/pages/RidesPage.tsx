@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { adminApi } from '../api/client'
 import { ChevronLeft, ChevronRight, Search } from 'lucide-react'
@@ -15,6 +15,7 @@ function StatusBadge({ status }: { status: string }) {
 export default function RidesPage() {
   const [page,   setPage]   = useState(0)
   const [search, setSearch] = useState('')
+  const [expanded, setExpanded] = useState<number | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['rides', page],
@@ -25,7 +26,8 @@ export default function RidesPage() {
   const rides: any[] = data?.content ?? []
   const totalPages: number = data?.totalPages ?? 0
   const filtered = rides.filter(r =>
-    !search || `${r.passenger?.firstName} ${r.pickupAddress} ${r.destinationAddress}`.toLowerCase().includes(search.toLowerCase())
+    !search || `${r.passengerName} ${r.driverName ?? ''} ${r.pickupAddress} ${r.destinationAddress}`
+      .toLowerCase().includes(search.toLowerCase())
   )
 
   return (
@@ -68,20 +70,38 @@ export default function RidesPage() {
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={7} className="py-10 text-center text-gray-400">No rides found</td></tr>
               ) : filtered.map((r: any) => (
-                <tr key={r.id} className="hover:bg-gray-50">
-                  <td className="py-3 pr-4 font-mono text-gray-500">#{r.id}</td>
-                  <td className="py-3 pr-4 font-medium">{r.passenger?.firstName} {r.passenger?.lastName}</td>
-                  <td className="py-3 pr-4">{r.driver ? `${r.driver?.user?.firstName} ${r.driver?.user?.lastName}` : '—'}</td>
-                  <td className="py-3 pr-4 max-w-xs">
-                    <div className="truncate text-xs text-gray-500">{r.pickupAddress}</div>
-                    <div className="truncate text-xs">{r.destinationAddress}</div>
-                  </td>
-                  <td className="py-3 pr-4"><StatusBadge status={r.status} /></td>
-                  <td className="py-3 pr-4 font-medium">${(r.actualFare ?? r.estimatedFare ?? 0).toFixed(2)}</td>
-                  <td className="py-3 pr-4 text-gray-500 text-xs">
-                    {r.requestedAt ? new Date(r.requestedAt).toLocaleDateString() : '-'}
-                  </td>
-                </tr>
+                <Fragment key={r.id}>
+                  <tr className="hover:bg-gray-50">
+                    <td className="py-3 pr-4">
+                      <button
+                        onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                        className="font-mono text-gray-500 hover:text-gray-900 underline decoration-dotted"
+                      >
+                        #{r.id}
+                      </button>
+                    </td>
+                    <td className="py-3 pr-4 font-medium">{r.passengerName}</td>
+                    <td className="py-3 pr-4">{r.driverName ?? '—'}</td>
+                    <td className="py-3 pr-4 max-w-xs">
+                      <div className="truncate text-xs text-gray-500">{r.pickupAddress}</div>
+                      <div className="truncate text-xs">{r.destinationAddress}</div>
+                    </td>
+                    <td className="py-3 pr-4"><StatusBadge status={r.status} /></td>
+                    <td className="py-3 pr-4 font-medium">
+                      {(r.actualFare ?? r.estimatedFare ?? 0).toFixed(2)} ETB
+                    </td>
+                    <td className="py-3 pr-4 text-gray-500 text-xs">
+                      {r.requestedAt ? new Date(r.requestedAt).toLocaleDateString() : '-'}
+                    </td>
+                  </tr>
+                  {expanded === r.id && (
+                    <tr className="bg-gray-50">
+                      <td colSpan={7} className="px-4 py-4">
+                        <Timeline rideId={r.id} ride={r} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -103,6 +123,62 @@ export default function RidesPage() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** The append-only state trail plus the ride facts that do not fit a table column. */
+function Timeline({ rideId, ride }: { rideId: number; ride: any }) {
+  const { data: events, isLoading } = useQuery({
+    queryKey: ['ride-events', rideId],
+    queryFn: () => adminApi.getRideEvents(rideId).then(r => r.data.data as any[]),
+  })
+
+  const facts: { label: string; value: string }[] = [
+    { label: 'Distance',  value: ride.distanceKm != null ? `${Number(ride.distanceKm).toFixed(2)} km` : '—' },
+    { label: 'Duration',  value: ride.durationMinutes != null ? `${ride.durationMinutes} min` : '—' },
+    { label: 'Payment',   value: ride.paymentMethod ?? '—' },
+    { label: 'Surge',     value: ride.surgeMultiplier ? `${ride.surgeMultiplier}x` : '1x' },
+    { label: 'Rated by passenger', value: ride.ratingByPassenger ? `${ride.ratingByPassenger}★` : 'Not rated' },
+    { label: 'Rated by driver',    value: ride.ratingByDriver ? `${ride.ratingByDriver}★` : 'Not rated' },
+  ]
+  if (ride.cancelledAt) {
+    facts.push({
+      label: 'Cancelled',
+      value: `${ride.cancelledBy ?? 'unknown'}${ride.cancellationReason ? ` · ${ride.cancellationReason}` : ''}`,
+    })
+  }
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-2">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+        {facts.map(f => (
+          <div key={f.label}>
+            <dt className="text-xs uppercase tracking-wide text-gray-500">{f.label}</dt>
+            <dd className="text-sm font-medium text-gray-900">{f.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <ol className="space-y-1.5 border-l border-gray-200 pl-4">
+        {isLoading ? (
+          <li className="text-sm text-gray-400">Loading trail...</li>
+        ) : events?.length === 0 ? (
+          <li className="text-sm text-gray-400">No state changes recorded</li>
+        ) : (
+          events?.map((e: any, i: number) => (
+            <li key={i} className="text-sm">
+              <span className="font-medium">{e.from ?? 'NEW'}</span>
+              <span className="text-gray-400"> → </span>
+              <span className="font-medium">{e.to}</span>
+              <span className="ml-2 text-xs text-gray-500">
+                {e.actor}{e.at ? ` · ${new Date(e.at).toLocaleTimeString()}` : ''}
+              </span>
+              {e.note && <div className="text-xs text-gray-500">{e.note}</div>}
+            </li>
+          ))
+        )}
+      </ol>
     </div>
   )
 }

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/network/api_client.dart';
@@ -84,7 +83,7 @@ class _RideCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [const BoxShadow(blurRadius: 4, color: Colors.black08)],
+        boxShadow: [const BoxShadow(blurRadius: 4, color: Colors.black12)],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -134,7 +133,9 @@ class _RideCard extends StatelessWidget {
                 ],
               ),
               Text(
-                '\$${(ride['actualFare'] as num?)?.toStringAsFixed(2) ?? '-'}',
+                ride['actualFare'] == null
+                    ? '-'
+                    : 'ETB ${(ride['actualFare'] as num).toStringAsFixed(2)}',
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ],

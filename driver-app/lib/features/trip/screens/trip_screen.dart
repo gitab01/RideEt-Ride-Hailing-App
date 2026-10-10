@@ -1,11 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:pin_code_fields/pin_code_fields.dart';
 
-import '../bloc/trip_bloc.dart';
+import '../../../core/network/websocket_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../bloc/trip_bloc.dart';
 
 class TripScreen extends StatefulWidget {
   final String rideId;
@@ -18,185 +21,387 @@ class TripScreen extends StatefulWidget {
 class _TripScreenState extends State<TripScreen> {
   GoogleMapController? _mapController;
   String _otpInput = '';
+  StreamSubscription? _pushes;
 
   @override
   void initState() {
     super.initState();
-    context.read<TripBloc>().add(TripRefreshed(widget.rideId));
+    context.read<TripBloc>().add(TripLoaded(widget.rideId));
+    // A passenger can walk away mid-approach; the driver at the kerb must hear about it.
+    _pushes = WebSocketService().pushes.listen((push) {
+      if (!mounted) return;
+      if (push.rideId.toString() != widget.rideId) return;
+      if (push.eventType == 'RIDE_CANCELLED') {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('The passenger cancelled this ride.')));
+        context.go('/home');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pushes?.cancel();
+    super.dispose();
   }
 
   String _statusLabel(String? status) {
     switch (status) {
-      case 'DRIVER_ASSIGNED': return 'Head to Pickup';
-      case 'DRIVER_ARRIVED':  return 'Waiting for Passenger';
-      case 'IN_PROGRESS':     return 'Ride in Progress';
-      default: return 'Processing...';
+      case 'DRIVER_ASSIGNED':
+        return 'Head to the pickup';
+      case 'DRIVER_ARRIVED':
+        return 'Waiting for the passenger';
+      case 'IN_PROGRESS':
+        return 'Ride in progress';
+      case 'SEARCHING':
+        return 'Looking for a driver';
+      default:
+        return 'Loading trip...';
     }
+  }
+
+  void _centerOn(LatLng point) {
+    _mapController?.animateCamera(CameraUpdate.newLatLngZoom(point, 15));
   }
 
   @override
   Widget build(BuildContext context) {
     return BlocConsumer<TripBloc, TripState>(
       listener: (ctx, state) {
-        if (state is TripDone) ctx.go('/home');
-        if (state is TripError) {
+        if (state is TripIdle) ctx.go('/home');
+        if (state is TripFailure) {
           ScaffoldMessenger.of(ctx).showSnackBar(
-            SnackBar(content: Text(state.message), backgroundColor: AppTheme.errorColor));
+              SnackBar(content: Text(state.message), backgroundColor: AppTheme.errorColor));
         }
       },
       builder: (ctx, state) {
+        if (state is TripLoading) return _TripScaffold(child: const Center(child: CircularProgressIndicator()));
+        if (state is TripDone) return _CompletedPanel(ride: state.ride);
+
         final ride = state is TripActive ? state.ride : null;
-        return Scaffold(
-          body: Stack(
-            children: [
-              GoogleMap(
-                onMapCreated: (c) => _mapController = c,
-                initialCameraPosition: CameraPosition(
-                  target: LatLng(
-                    (ride?['pickupLatitude'] as num?)?.toDouble() ?? 0,
-                    (ride?['pickupLongitude'] as num?)?.toDouble() ?? 0,
-                  ),
-                  zoom: 15,
+        final pickup = ride == null
+            ? null
+            : LatLng((ride['pickupLatitude'] as num?)?.toDouble() ?? 0,
+                (ride['pickupLongitude'] as num?)?.toDouble() ?? 0);
+
+        return _TripScaffold(
+          statusLabel: _statusLabel(ride?['status']),
+          map: GoogleMap(
+            onMapCreated: (c) {
+              _mapController = c;
+              if (pickup != null) _centerOn(pickup);
+            },
+            initialCameraPosition:
+                CameraPosition(target: pickup ?? const LatLng(8.9950, 38.7800), zoom: 15),
+            myLocationEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            mapToolbarEnabled: false,
+            markers: {
+              if (ride != null)
+                Marker(
+                  markerId: const MarkerId('pickup'),
+                  position: pickup!,
+                  icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+                  infoWindow: InfoWindow(title: 'Pickup', snippet: '${ride['pickupAddress']}'),
                 ),
-                myLocationEnabled: true,
-                zoomControlsEnabled: false,
-                markers: {
-                  if (ride != null) Marker(
-                    markerId: const MarkerId('pickup'),
-                    position: LatLng(
-                      (ride['pickupLatitude'] as num).toDouble(),
-                      (ride['pickupLongitude'] as num).toDouble(),
-                    ),
-                    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-                    infoWindow: const InfoWindow(title: 'Pickup'),
-                  ),
-                  if (ride != null) Marker(
-                    markerId: const MarkerId('destination'),
-                    position: LatLng(
-                      (ride['destinationLatitude'] as num).toDouble(),
-                      (ride['destinationLongitude'] as num).toDouble(),
-                    ),
-                    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-                    infoWindow: const InfoWindow(title: 'Destination'),
-                  ),
-                },
-              ),
-
-              // Status bar
-              Positioned(
-                top: 0, left: 0, right: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(20, 52, 20, 16),
-                  color: AppTheme.primaryColor,
-                  child: Text(
-                    _statusLabel(ride?['status']),
-                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                    textAlign: TextAlign.center,
-                  ),
+              if (ride != null)
+                Marker(
+                  markerId: const MarkerId('destination'),
+                  position: LatLng((ride['destinationLatitude'] as num).toDouble(),
+                      (ride['destinationLongitude'] as num).toDouble()),
+                  icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+                  infoWindow:
+                      InfoWindow(title: 'Destination', snippet: '${ride['destinationAddress']}'),
                 ),
-              ),
-
-              // Bottom action panel
-              Positioned(
-                bottom: 0, left: 0, right: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                    boxShadow: [BoxShadow(blurRadius: 20, color: Colors.black12)],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (ride != null) ...[
-                        // Passenger info
-                        Row(
-                          children: [
-                            const CircleAvatar(
-                              backgroundColor: AppTheme.primaryColor,
-                              child: Icon(Icons.person, color: Colors.white),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(ride['passengerName'] ?? 'Passenger',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                  Text(ride['pickupAddress'] ?? '',
-                                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                                      overflow: TextOverflow.ellipsis),
-                                ],
-                              ),
-                            ),
-                            Text('\$${(ride['estimatedFare'] as num?)?.toStringAsFixed(2) ?? '-'}',
-                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                                    color: AppTheme.primaryColor)),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-
-                      // OTP input for starting ride
-                      if (ride?['status'] == 'DRIVER_ARRIVED') ...[
-                        const Text('Enter passenger OTP to start ride',
-                            style: TextStyle(fontWeight: FontWeight.w500)),
-                        const SizedBox(height: 12),
-                        PinCodeTextField(
-                          appContext: context,
-                          length: 6,
-                          onChanged: (v) => _otpInput = v,
-                          pinTheme: PinTheme(
-                            shape: PinCodeFieldShape.box,
-                            borderRadius: BorderRadius.circular(8),
-                            fieldHeight: 48,
-                            fieldWidth: 42,
-                            activeFillColor: Colors.white,
-                            selectedFillColor: Colors.white,
-                            inactiveFillColor: Colors.white,
-                            activeColor: AppTheme.primaryColor,
-                            selectedColor: AppTheme.primaryColor,
-                            inactiveColor: Colors.grey.shade300,
-                          ),
-                          enableActiveFill: true,
-                          keyboardType: TextInputType.number,
-                        ),
-                        const SizedBox(height: 8),
-                        ElevatedButton(
-                          onPressed: () => ctx.read<TripBloc>().add(
-                              TripStarted(widget.rideId, _otpInput)),
-                          child: const Text('Start Ride'),
-                        ),
-                      ] else if (ride?['status'] == 'DRIVER_ASSIGNED') ...[
-                        ElevatedButton(
-                          onPressed: () => ctx.read<TripBloc>().add(TripArrived(widget.rideId)),
-                          child: const Text('I Have Arrived'),
-                        ),
-                      ] else if (ride?['status'] == 'IN_PROGRESS') ...[
-                        ElevatedButton(
-                          onPressed: () => ctx.read<TripBloc>().add(TripCompleted(widget.rideId)),
-                          style: ElevatedButton.styleFrom(backgroundColor: AppTheme.onlineColor),
-                          child: const Text('Complete Ride'),
-                        ),
-                      ],
-
-                      const SizedBox(height: 8),
-                      if (ride?['status'] != 'IN_PROGRESS')
-                        TextButton(
-                          onPressed: () {
-                            ctx.read<TripBloc>().add(TripCancelled(widget.rideId));
-                          },
-                          child: const Text('Cancel Ride', style: TextStyle(color: AppTheme.errorColor)),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+            },
+          ),
+          panel: _TripPanel(
+            ride: ride,
+            otp: _otpInput,
+            busy: state is TripLoading,
+            onOtpChanged: (v) => _otpInput = v,
+            onArrived: () => ctx.read<TripBloc>().add(TripArrived(widget.rideId)),
+            onStart: () => ctx.read<TripBloc>().add(TripStarted(widget.rideId, _otpInput)),
+            onComplete: () => ctx.read<TripBloc>().add(TripCompleted(widget.rideId)),
+            onCancel: () => _confirmCancel(ctx),
           ),
         );
       },
+    );
+  }
+
+  Future<void> _confirmCancel(BuildContext ctx) async {
+    final yes = await showDialog<bool>(
+      context: ctx,
+      builder: (b) => AlertDialog(
+        title: const Text('Cancel this ride?'),
+        content: const Text('The passenger is told you cancelled and the ride goes back to the pool.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(b, false), child: const Text('Keep it')),
+          FilledButton(
+              onPressed: () => Navigator.pop(b, true), child: const Text('Cancel ride')),
+        ],
+      ),
+    );
+    if (yes == true) ctx.read<TripBloc>().add(TripCancelled(widget.rideId, reason: 'driver cancelled'));
+  }
+}
+
+class _TripScaffold extends StatelessWidget {
+  final Widget? map;
+  final Widget? panel;
+  final String? statusLabel;
+  final Widget child;
+
+  _TripScaffold({this.map, this.panel, this.statusLabel, Widget? child})
+      : child = child ?? const SizedBox.shrink();
+
+  @override
+  Widget build(BuildContext context) {
+    if (map == null) return Scaffold(body: child);
+    return Scaffold(
+      body: Stack(
+        children: [
+          Positioned.fill(child: map!),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              color: AppTheme.primaryColor,
+              padding: const EdgeInsets.fromLTRB(16, 52, 16, 14),
+              child: Row(
+                children: [
+                  IconButton(
+                      onPressed: () => context.go('/home'),
+                      icon: const Icon(Icons.arrow_back, color: Colors.white)),
+                  Expanded(
+                    child: Text(statusLabel ?? '',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(width: 48),
+                ],
+              ),
+            ),
+          ),
+          Positioned(bottom: 0, left: 0, right: 0, child: panel ?? const SizedBox.shrink()),
+        ],
+      ),
+    );
+  }
+}
+
+class _TripPanel extends StatelessWidget {
+  final Map<String, dynamic>? ride;
+  final String otp;
+  final bool busy;
+  final ValueChanged<String> onOtpChanged;
+  final VoidCallback onArrived;
+  final VoidCallback onStart;
+  final VoidCallback onComplete;
+  final VoidCallback onCancel;
+
+  const _TripPanel({
+    required this.ride,
+    required this.otp,
+    required this.busy,
+    required this.onOtpChanged,
+    required this.onArrived,
+    required this.onStart,
+    required this.onComplete,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final status = ride?['status'];
+    final fare = (ride?['estimatedFare'] as num?)?.toDouble();
+    final km = (ride?['distanceKm'] as num?)?.toDouble();
+    final minutes = (ride?['durationMinutes'] as num?)?.toInt();
+
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 26),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (ride != null)
+            Row(
+              children: [
+                const CircleAvatar(
+                  backgroundColor: AppTheme.primaryColor,
+                  child: Icon(Icons.person, color: Colors.white),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${ride!['passengerName'] ?? 'Passenger'}',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text('${ride!['destinationAddress'] ?? ''}',
+                          style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                          overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(fare == null ? 'Fare pending' : 'ETB ${fare.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.bold, color: AppTheme.primaryColor)),
+                    if (km != null || minutes != null)
+                      Text(
+                          '${km == null ? '' : '${km.toStringAsFixed(1)} km'}'
+                          '${km != null && minutes != null ? ' · ' : ''}'
+                          '${minutes == null ? '' : '$minutes min'}',
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                  ],
+                ),
+              ],
+            ),
+          if (ride != null) const SizedBox(height: 16),
+          if (status == 'DRIVER_ASSIGNED')
+            _PrimaryButton(label: 'I have arrived', onPressed: onArrived)
+          else if (status == 'DRIVER_ARRIVED') ...[
+            const Text('Ask the passenger for their 6-digit start code',
+                style: TextStyle(fontWeight: FontWeight.w500)),
+            const SizedBox(height: 10),
+            PinCodeTextField(
+              appContext: context,
+              length: 6,
+              onChanged: onOtpChanged,
+              pinTheme: PinTheme(
+                shape: PinCodeFieldShape.box,
+                borderRadius: BorderRadius.circular(8),
+                fieldHeight: 46,
+                fieldWidth: 40,
+                activeFillColor: Colors.white,
+                selectedFillColor: Colors.white,
+                inactiveFillColor: Colors.white,
+                activeColor: AppTheme.primaryColor,
+                selectedColor: AppTheme.primaryColor,
+                inactiveColor: Colors.grey.shade300,
+              ),
+              enableActiveFill: true,
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 10),
+            _PrimaryButton(
+                label: 'Start ride',
+                enabled: otp.length == 6,
+                onPressed: onStart),
+          ] else if (status == 'IN_PROGRESS')
+            _PrimaryButton(
+                label: 'Complete ride', color: AppTheme.onlineColor, onPressed: onComplete),
+          if (status == 'DRIVER_ASSIGNED' || status == 'DRIVER_ARRIVED') ...[
+            const SizedBox(height: 8),
+            TextButton(onPressed: onCancel, child: const Text('Cancel this ride')),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PrimaryButton extends StatelessWidget {
+  final String label;
+  final Color color;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  const _PrimaryButton(
+      {required this.label, this.color = AppTheme.primaryColor, this.enabled = true, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: FilledButton(
+        onPressed: enabled ? onPressed : null,
+        style: FilledButton.styleFrom(
+            backgroundColor: color, foregroundColor: Colors.white, shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+        child: Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+}
+
+class _CompletedPanel extends StatelessWidget {
+  final Map<String, dynamic> ride;
+  const _CompletedPanel({required this.ride});
+
+  @override
+  Widget build(BuildContext context) {
+    final actual = (ride['actualFare'] as num?)?.toDouble();
+    final estimated = (ride['estimatedFare'] as num?)?.toDouble();
+    final km = (ride['distanceKm'] as num?)?.toDouble();
+    final minutes = (ride['durationMinutes'] as num?)?.toInt();
+    final cash = ride['paymentMethod'] == 'CASH';
+
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SizedBox(height: 24),
+              const Icon(Icons.check_circle_outline, size: 56, color: AppTheme.onlineColor),
+              const SizedBox(height: 12),
+              const Text('Trip complete',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(cash ? 'Collect the fare in cash.' : 'The card charge was billed automatically.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade600)),
+              const SizedBox(height: 24),
+              _Row(label: 'Passenger', value: '${ride['passengerName'] ?? '-'}'),
+              _Row(
+                  label: 'Fare',
+                  value: 'ETB ${(actual ?? estimated ?? 0).toStringAsFixed(2)}',
+                  strong: true),
+              if (actual != null && estimated != null && actual != estimated)
+                _Row(label: 'Estimate', value: 'ETB ${estimated.toStringAsFixed(2)}'),
+              if (km != null) _Row(label: 'Distance', value: '${km.toStringAsFixed(1)} km'),
+              if (minutes != null) _Row(label: 'Duration', value: '$minutes min'),
+              const Spacer(),
+              _PrimaryButton(label: 'Back online', onPressed: () => context.go('/home')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Row extends StatelessWidget {
+  final String label, value;
+  final bool strong;
+
+  const _Row({required this.label, required this.value, this.strong = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(color: Colors.grey.shade600)),
+          Text(value,
+              style: TextStyle(
+                  fontWeight: strong ? FontWeight.bold : FontWeight.w500, fontSize: strong ? 18 : 14)),
+        ],
+      ),
     );
   }
 }

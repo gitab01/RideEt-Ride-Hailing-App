@@ -6,6 +6,7 @@ import com.rideet.dto.request.RideRequest;
 import com.rideet.dto.response.ApiResponse;
 import com.rideet.dto.response.FareEstimateResponse;
 import com.rideet.dto.response.RideResponse;
+import com.rideet.matching.RideStateMachine;
 import com.rideet.service.RideService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +16,8 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/rides")
@@ -44,8 +47,17 @@ public class RideController {
     }
 
     @GetMapping("/{rideId}")
-    public ResponseEntity<ApiResponse<RideResponse>> getRide(@PathVariable Long rideId) {
-        return ResponseEntity.ok(ApiResponse.success(rideService.getRideById(rideId)));
+    public ResponseEntity<ApiResponse<RideResponse>> getRide(
+            @AuthenticationPrincipal User user,
+            @PathVariable Long rideId) {
+
+        return ResponseEntity.ok(ApiResponse.success(rideService.getRideForUser(user.getId(), rideId)));
+    }
+
+    /** Ride in progress for this passenger, so a re-launched app can resume instead of guessing. */
+    @GetMapping("/active")
+    public ResponseEntity<ApiResponse<List<RideResponse>>> getActiveRide(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.success(rideService.getActiveRideForUser(user.getId())));
     }
 
     @PostMapping("/{rideId}/cancel")
@@ -54,7 +66,8 @@ public class RideController {
             @PathVariable Long rideId,
             @RequestParam(required = false) String reason) {
 
-        RideResponse ride = rideService.cancelRide(user.getId(), rideId, reason, "PASSENGER");
+        RideResponse ride = rideService.cancelRide(user.getId(), rideId, reason,
+                RideStateMachine.ACTOR_PASSENGER);
         return ResponseEntity.ok(ApiResponse.success("Ride cancelled", ride));
     }
 
@@ -64,7 +77,7 @@ public class RideController {
             @PathVariable Long rideId,
             @Valid @RequestBody RatingRequest request) {
 
-        rideService.rateDriver(user.getId(), rideId, request);
+        rideService.rateRide(user.getId(), rideId, request);
         return ResponseEntity.ok(ApiResponse.success("Rating submitted", null));
     }
 

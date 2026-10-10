@@ -17,18 +17,16 @@
     "@tanstack/react-query": "^5.24.1",
     "recharts": "^2.12.1",
     "@stomp/stompjs": "^7.0.0",
-    "sockjs-client": "^1.6.1",
     "leaflet": "^1.9.4",
     "react-leaflet": "^4.2.1",
-    "date-fns": "^3.3.1",
     "react-hot-toast": "^2.4.1",
     "lucide-react": "^0.344.0",
-    "clsx": "^2.1.0"
+    "clsx": "^2.1.0",
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
     "@types/react": "^18.2.56",
     "@types/react-dom": "^18.2.19",
-    "@types/sockjs-client": "^1.5.4",
     "@types/leaflet": "^1.9.8",
     "@typescript-eslint/eslint-plugin": "^7.0.2",
     "@typescript-eslint/parser": "^7.0.2",

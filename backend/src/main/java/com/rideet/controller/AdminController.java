@@ -1,9 +1,9 @@
 package com.rideet.controller;
 
-import com.rideet.domain.entity.Driver;
-import com.rideet.domain.entity.Ride;
-import com.rideet.domain.entity.User;
 import com.rideet.dto.response.ApiResponse;
+import com.rideet.dto.response.DriverResponse;
+import com.rideet.dto.response.RideResponse;
+import com.rideet.dto.response.UserResponse;
 import com.rideet.service.AdminService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -30,40 +30,45 @@ public class AdminController {
     }
 
     @GetMapping("/users")
-    public ResponseEntity<ApiResponse<Page<User>>> getUsers(@PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(ApiResponse.success(adminService.getAllPassengers(pageable)));
+    public ResponseEntity<ApiResponse<Page<UserResponse>>> getUsers(@PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(ApiResponse.success(adminService.getAllUsers(pageable)));
     }
 
     @GetMapping("/drivers")
-    public ResponseEntity<ApiResponse<Page<Driver>>> getDrivers(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<ApiResponse<Page<DriverResponse>>> getDrivers(@PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(ApiResponse.success(adminService.getAllDrivers(pageable)));
     }
 
     @PostMapping("/drivers/{driverId}/verify")
-    public ResponseEntity<ApiResponse<Driver>> verifyDriver(@PathVariable Long driverId) {
-        Driver driver = adminService.verifyDriverDocuments(driverId);
-        return ResponseEntity.ok(ApiResponse.success("Driver verified", driver));
+    public ResponseEntity<ApiResponse<DriverResponse>> verifyDriver(@PathVariable Long driverId) {
+        return ResponseEntity.ok(ApiResponse.success("Driver verified",
+                adminService.verifyDriverDocuments(driverId)));
     }
 
     @PostMapping("/drivers/{driverId}/toggle-suspend")
-    public ResponseEntity<ApiResponse<Driver>> toggleDriverSuspension(@PathVariable Long driverId) {
-        Driver driver = adminService.toggleDriverSuspension(driverId);
-        return ResponseEntity.ok(ApiResponse.success("Driver status updated", driver));
+    public ResponseEntity<ApiResponse<DriverResponse>> toggleDriverSuspension(@PathVariable Long driverId) {
+        return ResponseEntity.ok(ApiResponse.success("Driver status updated",
+                adminService.toggleDriverSuspension(driverId)));
     }
 
     @PostMapping("/users/{userId}/toggle-status")
-    public ResponseEntity<ApiResponse<User>> toggleUserStatus(@PathVariable Long userId) {
-        User user = adminService.toggleUserStatus(userId);
-        return ResponseEntity.ok(ApiResponse.success("User status updated", user));
+    public ResponseEntity<ApiResponse<UserResponse>> toggleUserStatus(@PathVariable Long userId) {
+        return ResponseEntity.ok(ApiResponse.success("User status updated",
+                adminService.toggleUserStatus(userId)));
     }
 
     @GetMapping("/rides")
-    public ResponseEntity<ApiResponse<Page<Ride>>> getAllRides(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<ApiResponse<Page<RideResponse>>> getAllRides(@PageableDefault(size = 20) Pageable pageable) {
         return ResponseEntity.ok(ApiResponse.success(adminService.getAllRides(pageable)));
     }
 
     @GetMapping("/rides/active")
-    public ResponseEntity<ApiResponse<List<Ride>>> getActiveRides() {
+    public ResponseEntity<ApiResponse<List<RideResponse>>> getActiveRides() {
         return ResponseEntity.ok(ApiResponse.success(adminService.getActiveRides()));
+    }
+
+    @GetMapping("/rides/{rideId}/events")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getRideEvents(@PathVariable Long rideId) {
+        return ResponseEntity.ok(ApiResponse.success(adminService.getRideEvents(rideId)));
     }
 }

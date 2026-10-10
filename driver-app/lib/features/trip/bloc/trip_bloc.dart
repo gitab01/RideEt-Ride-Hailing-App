@@ -1,91 +1,167 @@
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:equatable/equatable.dart';
 import 'package:dio/dio.dart';
+import 'package:equatable/equatable.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
 import '../../../core/network/api_client.dart';
 
 abstract class TripEvent extends Equatable {
-  @override List<Object?> get props => [];
+  @override
+  List<Object?> get props => [];
 }
-class TripAccepted  extends TripEvent { final String rideId; TripAccepted(this.rideId); }
-class TripArrived   extends TripEvent { final String rideId; TripArrived(this.rideId); }
-class TripStarted   extends TripEvent { final String rideId; final String otp; TripStarted(this.rideId, this.otp); }
-class TripCompleted extends TripEvent { final String rideId; TripCompleted(this.rideId); }
-class TripCancelled extends TripEvent { final String rideId; final String? reason; TripCancelled(this.rideId, {this.reason}); }
-class TripRefreshed extends TripEvent { final String rideId; TripRefreshed(this.rideId); }
+
+/// Load whichever ride this driver is currently on, so a relaunched app resumes the trip.
+class TripResumed extends TripEvent {}
+
+class TripLoaded extends TripEvent {
+  final String rideId;
+  TripLoaded(this.rideId);
+  @override
+  List<Object?> get props => [rideId];
+}
+
+class TripArrived extends TripEvent {
+  final String rideId;
+  TripArrived(this.rideId);
+  @override
+  List<Object?> get props => [rideId];
+}
+
+class TripStarted extends TripEvent {
+  final String rideId;
+  final String otp;
+  TripStarted(this.rideId, this.otp);
+  @override
+  List<Object?> get props => [rideId, otp];
+}
+
+class TripCompleted extends TripEvent {
+  final String rideId;
+  TripCompleted(this.rideId);
+  @override
+  List<Object?> get props => [rideId];
+}
+
+class TripCancelled extends TripEvent {
+  final String rideId;
+  final String? reason;
+  TripCancelled(this.rideId, {this.reason});
+  @override
+  List<Object?> get props => [rideId, reason];
+}
 
 abstract class TripState extends Equatable {
-  @override List<Object?> get props => [];
+  @override
+  List<Object?> get props => [];
 }
-class TripInitial   extends TripState {}
-class TripLoading   extends TripState {}
-class TripActive    extends TripState { final Map<String, dynamic> ride; TripActive(this.ride); @override List<Object?> get props => [ride]; }
-class TripDone      extends TripState { final Map<String, dynamic> ride; TripDone(this.ride); @override List<Object?> get props => [ride]; }
-class TripError     extends TripState { final String message; TripError(this.message); @override List<Object?> get props => [message]; }
+
+class TripInitial extends TripState {}
+
+class TripLoading extends TripState {}
+
+/// No ride assigned; the driver belongs on the home screen.
+class TripIdle extends TripState {}
+
+class TripActive extends TripState {
+  final Map<String, dynamic> ride;
+  TripActive(this.ride);
+  @override
+  List<Object?> get props => [ride];
+}
+
+class TripDone extends TripState {
+  final Map<String, dynamic> ride;
+  TripDone(this.ride);
+  @override
+  List<Object?> get props => [ride];
+}
+
+class TripFailure extends TripState {
+  final String message;
+  TripFailure(this.message);
+  @override
+  List<Object?> get props => [message];
+}
 
 class TripBloc extends Bloc<TripEvent, TripState> {
   final _api = ApiClient();
 
   TripBloc() : super(TripInitial()) {
-    on<TripAccepted>(_onAccept);
-    on<TripArrived>(_onArrive);
-    on<TripStarted>(_onStart);
-    on<TripCompleted>(_onComplete);
-    on<TripCancelled>(_onCancel);
-    on<TripRefreshed>(_onRefresh);
+    on<TripResumed>(_onResumed);
+    on<TripLoaded>(_onLoaded);
+    on<TripArrived>((e, emit) => _post(emit, '/driver/rides/${e.rideId}/arrived'));
+    on<TripStarted>((e, emit) =>
+        _post(emit, '/driver/rides/${e.rideId}/start', queryParameters: {'otp': e.otp}));
+    on<TripCompleted>((e, emit) => _post(emit, '/driver/rides/${e.rideId}/complete', done: true));
+    on<TripCancelled>(_onCancelled);
   }
 
-  Future<void> _onAccept(TripAccepted e, Emitter<TripState> emit) async {
+  Future<void> _onResumed(TripResumed e, Emitter<TripState> emit) async {
     emit(TripLoading());
     try {
-      final res = await _api.dio.post('/driver/rides/${e.rideId}/accept');
-      emit(TripActive(res.data['data']));
+      final res = await _api.dio.get('/driver/rides/active');
+      final rides = (res.data['data'] ?? []) as List;
+      if (rides.isEmpty) {
+        emit(TripIdle());
+        return;
+      }
+      emit(_classify(rides.first as Map<String, dynamic>));
     } on DioException catch (ex) {
-      emit(TripError(ex.response?.data['message'] ?? 'Failed to accept'));
+      emit(TripFailure(_errorOf(ex, 'Could not load your trip')));
     }
   }
 
-  Future<void> _onArrive(TripArrived e, Emitter<TripState> emit) async {
+  Future<void> _onLoaded(TripLoaded e, Emitter<TripState> emit) async {
+    if (state is TripInitial) emit(TripLoading());
     try {
-      final res = await _api.dio.post('/driver/rides/${e.rideId}/arrived');
-      emit(TripActive(res.data['data']));
+      final res = await _api.dio.get('/driver/rides/${e.rideId}');
+      final ride = res.data['data'];
+      emit(ride == null ? TripIdle() : _classify(ride as Map<String, dynamic>));
     } on DioException catch (ex) {
-      emit(TripError(ex.response?.data['message'] ?? 'Failed'));
+      emit(TripFailure(_errorOf(ex, 'Could not load your trip')));
     }
   }
 
-  Future<void> _onStart(TripStarted e, Emitter<TripState> emit) async {
-    try {
-      final res = await _api.dio.post('/driver/rides/${e.rideId}/start',
-          queryParameters: {'otp': e.otp});
-      emit(TripActive(res.data['data']));
-    } on DioException catch (ex) {
-      emit(TripError(ex.response?.data['message'] ?? 'Invalid OTP'));
-    }
-  }
-
-  Future<void> _onComplete(TripCompleted e, Emitter<TripState> emit) async {
-    try {
-      final res = await _api.dio.post('/driver/rides/${e.rideId}/complete');
-      emit(TripDone(res.data['data']));
-    } on DioException catch (ex) {
-      emit(TripError(ex.response?.data['message'] ?? 'Failed'));
-    }
-  }
-
-  Future<void> _onCancel(TripCancelled e, Emitter<TripState> emit) async {
+  Future<void> _onCancelled(TripCancelled e, Emitter<TripState> emit) async {
+    emit(TripLoading());
     try {
       await _api.dio.post('/driver/rides/${e.rideId}/cancel',
           queryParameters: {'reason': e.reason});
-      emit(TripInitial());
+      emit(TripIdle());
     } on DioException catch (ex) {
-      emit(TripError(ex.response?.data['message'] ?? 'Failed'));
+      emit(TripFailure(_errorOf(ex, 'Could not cancel this ride')));
     }
   }
 
-  Future<void> _onRefresh(TripRefreshed e, Emitter<TripState> emit) async {
+  Future<void> _post(Emitter<TripState> emit, String path,
+      {Map<String, dynamic>? queryParameters, bool done = false}) async {
+    emit(TripLoading());
     try {
-      final res = await _api.dio.get('/rides/${e.rideId}');
-      emit(TripActive(res.data['data']));
-    } catch (_) {}
+      final res = await _api.dio.post(path, queryParameters: queryParameters);
+      final ride = res.data['data'] as Map<String, dynamic>?;
+      emit(ride == null ? TripIdle() : (done ? TripDone(ride) : _classify(ride)));
+    } on DioException catch (ex) {
+      emit(TripFailure(_errorOf(ex, 'That action did not go through')));
+    }
+  }
+
+  /// The server is the only authority on where a ride is; the same response drives
+  /// both the screen and which button is offered next.
+  TripState _classify(Map<String, dynamic> ride) {
+    switch (ride['status']) {
+      case 'COMPLETED':
+        return TripDone(ride);
+      case 'CANCELLED':
+      case 'NO_DRIVER_FOUND':
+        return TripIdle();
+      default:
+        return TripActive(ride);
+    }
+  }
+
+  static String _errorOf(DioException e, String fallback) {
+    final data = e.response?.data;
+    if (data is Map && data['message'] is String) return data['message'] as String;
+    if (e.type == DioExceptionType.connectionError) return 'Cannot reach the RideEt server';
+    return fallback;
   }
 }

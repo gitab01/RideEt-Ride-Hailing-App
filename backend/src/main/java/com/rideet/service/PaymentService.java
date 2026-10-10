@@ -2,6 +2,7 @@ package com.rideet.service;
 
 import com.rideet.domain.entity.Payment;
 import com.rideet.domain.entity.Ride;
+import com.rideet.domain.enums.PaymentMethod;
 import com.rideet.domain.enums.PaymentStatus;
 import com.rideet.exception.BadRequestException;
 import com.rideet.exception.ResourceNotFoundException;
@@ -30,6 +31,9 @@ public class PaymentService {
     @Value("${stripe.secret-key}")
     private String stripeSecretKey;
 
+    @Value("${stripe.currency:usd}")
+    private String chargeCurrency;
+
     private final PaymentRepository paymentRepository;
     private final RideRepository rideRepository;
 
@@ -39,16 +43,28 @@ public class PaymentService {
     }
 
     @Transactional
-    public Map<String, String> createPaymentIntent(Long rideId) {
+    public Map<String, String> createPaymentIntent(Long passengerUserId, Long rideId) {
         Ride ride = rideRepository.findById(rideId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
+        if (!ride.getPassenger().getId().equals(passengerUserId)) {
+            throw new BadRequestException("Only the passenger pays for a ride");
+        }
+        if (ride.getPaymentMethod() == PaymentMethod.CASH) {
+            throw new BadRequestException("This ride is paid in cash");
+        }
+        if (isTestKey(stripeSecretKey)) {
+            throw new BadRequestException("Payments are not configured on this server");
+        }
 
-        long amountCents = (long) (ride.getEstimatedFare() * 100);
+        // The fare charged is the fare actually measured once the trip is done; while the
+        // ride is still running the estimate is all there is to bill against.
+        double payable = ride.getActualFare() != null ? ride.getActualFare() : ride.getEstimatedFare();
+        long amountCents = (long) (payable * 100);
 
         try {
             PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
                     .setAmount(amountCents)
-                    .setCurrency("usd")
+                    .setCurrency(chargeCurrency)
                     .putMetadata("rideId", rideId.toString())
                     .putMetadata("passengerId", ride.getPassenger().getId().toString())
                     .build();
@@ -58,7 +74,7 @@ public class PaymentService {
             Payment payment = Payment.builder()
                     .ride(ride)
                     .passenger(ride.getPassenger())
-                    .amount(ride.getEstimatedFare())
+                    .amount(payable)
                     .paymentMethod(ride.getPaymentMethod())
                     .stripePaymentIntentId(intent.getId())
                     .status(PaymentStatus.PENDING)
@@ -68,6 +84,7 @@ public class PaymentService {
             Map<String, String> result = new HashMap<>();
             result.put("clientSecret", intent.getClientSecret());
             result.put("paymentIntentId", intent.getId());
+            result.put("amount", String.valueOf(payable));
             return result;
 
         } catch (StripeException e) {
@@ -80,15 +97,38 @@ public class PaymentService {
     public void confirmPayment(String paymentIntentId) {
         Payment payment = paymentRepository.findByStripePaymentIntentId(paymentIntentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
-
+        if (payment.getStatus() == PaymentStatus.COMPLETED) {
+            return; // Stripe retries deliveries; a replay must not be a second charge
+        }
         payment.setStatus(PaymentStatus.COMPLETED);
         payment.setPaidAt(LocalDateTime.now());
         paymentRepository.save(payment);
         log.info("Payment confirmed for ride {}", payment.getRide().getId());
     }
 
-    public Payment getPaymentByRideId(Long rideId) {
-        return paymentRepository.findByRideId(rideId)
-                .orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+    @Transactional(readOnly = true)
+    public Map<String, Object> getPaymentStatus(Long userId, Long rideId) {
+        Ride ride = rideRepository.findById(rideId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
+        boolean participant = ride.getPassenger().getId().equals(userId)
+                || (ride.getDriver() != null && ride.getDriver().getUser().getId().equals(userId));
+        if (!participant) {
+            throw new BadRequestException("You are not a participant of this ride");
+        }
+
+        Map<String, Object> view = new HashMap<>();
+        view.put("rideId", rideId);
+        view.put("amount", ride.getActualFare() != null ? ride.getActualFare() : ride.getEstimatedFare());
+        view.put("paymentMethod", ride.getPaymentMethod());
+        paymentRepository.findByRideId(rideId).ifPresent(p -> {
+            view.put("status", p.getStatus());
+            view.put("paidAt", p.getPaidAt());
+            view.put("paymentIntentId", p.getStripePaymentIntentId());
+        });
+        return view;
+    }
+
+    private boolean isTestKey(String key) {
+        return key == null || key.isBlank() || key.startsWith("sk_test_your");
     }
 }

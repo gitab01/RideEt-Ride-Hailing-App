@@ -5,6 +5,7 @@ import com.rideet.domain.enums.RideStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -26,15 +27,42 @@ public interface RideRepository extends JpaRepository<Ride, Long> {
 
     List<Ride> findByStatus(RideStatus status);
 
+    List<Ride> findByStatusIn(List<RideStatus> statuses);
+
+    long countByStatusIn(List<RideStatus> statuses);
+
     @Query("SELECT COUNT(r) FROM Ride r WHERE r.status = :status")
-    long countByStatus(RideStatus status);
+    long countByStatus(@Param("status") RideStatus status);
 
-    @Query("SELECT SUM(r.actualFare) FROM Ride r WHERE r.status = 'COMPLETED' AND r.completedAt BETWEEN :start AND :end")
-    Double sumRevenueByDateRange(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+    @Query("SELECT SUM(r.actualFare) FROM Ride r WHERE r.status = :status "
+            + "AND r.completedAt BETWEEN :start AND :end")
+    Double sumRevenueByDateRange(@Param("status") RideStatus status,
+                                 @Param("start") LocalDateTime start,
+                                 @Param("end") LocalDateTime end);
 
-    @Query("SELECT COUNT(r) FROM Ride r WHERE r.completedAt BETWEEN :start AND :end AND r.status = 'COMPLETED'")
-    long countCompletedRidesByDateRange(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+    @Query("SELECT COUNT(r) FROM Ride r WHERE r.status = :status AND r.completedAt BETWEEN :start AND :end")
+    long countCompletedRidesByDateRange(@Param("status") RideStatus status,
+                                        @Param("start") LocalDateTime start,
+                                        @Param("end") LocalDateTime end);
 
-    @Query("SELECT r FROM Ride r WHERE r.status IN ('REQUESTED', 'SEARCHING', 'DRIVER_ASSIGNED', 'DRIVER_ARRIVED', 'IN_PROGRESS')")
-    List<Ride> findActiveRides();
+    @Query("SELECT r FROM Ride r WHERE r.status IN :statuses ORDER BY r.requestedAt DESC")
+    List<Ride> findActiveRides(@Param("statuses") List<RideStatus> statuses);
+
+    /**
+     * Compare-and-set on ride status: exactly one concurrent caller gets 1 row updated.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Ride r SET r.status = :to WHERE r.id = :id AND r.status = :from")
+    int compareAndSetStatus(@Param("id") Long id,
+                            @Param("from") RideStatus from,
+                            @Param("to") RideStatus to);
+
+    @Query("SELECT r FROM Ride r WHERE r.status = :status AND r.requestedAt < :before")
+    List<Ride> findByStatusRequestedBefore(@Param("status") RideStatus status,
+                                           @Param("before") LocalDateTime before);
+
+    Optional<Ride> findByIdAndPassengerId(Long id, Long passengerId);
+
+    @Query("SELECT r FROM Ride r WHERE r.status = :status ORDER BY r.requestedAt DESC")
+    Page<Ride> findByStatusPaged(@Param("status") RideStatus status, Pageable pageable);
 }

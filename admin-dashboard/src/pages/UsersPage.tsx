@@ -70,7 +70,7 @@ export default function UsersPage() {
                   <td className="py-3 pr-4 font-medium">{u.firstName} {u.lastName}</td>
                   <td className="py-3 pr-4 text-gray-600">{u.email}</td>
                   <td className="py-3 pr-4">{u.phone}</td>
-                  <td className="py-3 pr-4">${(u.walletBalance ?? 0).toFixed(2)}</td>
+                  <td className="py-3 pr-4">{(u.walletBalance ?? 0).toFixed(2)} ETB</td>
                   <td className="py-3 pr-4">
                     <span className={u.enabled
                       ? 'badge-online' : 'badge-suspended'}>

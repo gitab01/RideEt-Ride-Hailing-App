@@ -16,4 +16,7 @@ public class AuthResponse {
     private String lastName;
     private UserRole role;
     private String profilePictureUrl;
+    /** False for a DRIVER account that has not filed vehicle details yet. */
+    @Builder.Default
+    private boolean driverOnboarded = true;
 }

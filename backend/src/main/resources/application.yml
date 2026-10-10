@@ -2,21 +2,16 @@ spring:
   application:
     name: rideet-backend
 
-  datasource:
-    url: jdbc:sqlserver://localhost:1433;databaseName=rideet;encrypt=true;trustServerCertificate=true
-    username: ${DB_USERNAME:sa}
-    password: ${DB_PASSWORD:YourStrong@Passw0rd}
-    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
-
   jpa:
     hibernate:
       ddl-auto: update
     show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.SQLServerDialect
-        format_sql: true
     open-in-view: false
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
 
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
@@ -28,20 +23,23 @@ spring:
       mail.smtp.starttls.enable: true
 
 server:
-  port: 8080
+  port: ${PORT:8080}
   servlet:
     context-path: /api/v1
 
 # JWT Configuration
 jwt:
   secret: ${JWT_SECRET:RideEtSuperSecretKeyForJWTTokenGenerationMinimum256BitsLong}
-  expiration: 86400000       # 24 hours in ms
-  refresh-expiration: 604800000  # 7 days in ms
+  expiration: 86400000            # 24 hours in ms
+  refresh-expiration: 604800000   # 7 days in ms
 
 # Stripe
 stripe:
   secret-key: ${STRIPE_SECRET_KEY:sk_test_your_stripe_secret_key}
   webhook-secret: ${STRIPE_WEBHOOK_SECRET:whsec_your_webhook_secret}
+  # Fares are shown to riders in ETB, but Stripe has no ETB charge currency, so card
+  # payments settle in this currency while the fare number itself stays birr-denominated.
+  currency: ${STRIPE_CURRENCY:usd}
 
 # Google Maps
 google:
@@ -52,6 +50,16 @@ google:
 otp:
   expiration-minutes: 5
   length: 6
+  # Without an SMS gateway configured, codes are logged instead of sent and this
+  # code is accepted for any number so the apps can be exercised end to end.
+  dev-code: ${OTP_DEV_CODE:123456}
+
+# Matching engine
+matching:
+  cell-size-km: 2.0               # grid cell edge; a lookup checks the cell then rings outward
+  max-radius-km: 12.0             # beyond this the ride is released as NO_DRIVER_FOUND
+  offer-window-seconds: 20        # a driver must accept inside this window
+  candidates-per-round: 5         # how many nearest drivers an offer round touches
 
 # Fare Configuration
 fare:
@@ -60,14 +68,50 @@ fare:
   per-minute-rate: 0.20
   minimum-fare: 5.00
   surge-multiplier: 1.0
+  # Final fare may not deviate further than this from the quoted estimate.
+  max-deviation-ratio: 0.25
 
-# File upload
-spring.servlet.multipart:
-  max-file-size: 10MB
-  max-request-size: 10MB
+# Where uploaded onboarding documents are kept; served back from /files/**.
+storage:
+  dir: ${STORAGE_DIR:./uploads}
 
 logging:
   level:
     com.rideet: DEBUG
     org.springframework.security: INFO
     org.springframework.web.socket: INFO
+
+---
+# Local development: in-memory H2, no SQL Server required.
+#   mvn spring-boot:run -Dspring-boot.run.profiles=dev
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: jdbc:h2:mem:rideet;DB_CLOSE_DELAY=-1;NON_KEYWORDS=USER,VALUE,READ
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+---
+# Default / production: Microsoft SQL Server.
+spring:
+  config:
+    activate:
+      on-profile: "!dev"
+  datasource:
+    url: ${DB_URL:jdbc:sqlserver://localhost:1433;databaseName=rideet;encrypt=true;trustServerCertificate=true}
+    username: ${DB_USERNAME:sa}
+    password: ${DB_PASSWORD:YourStrong@Passw0rd}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+  jpa:
+    database-platform: org.hibernate.dialect.SQLServerDialect

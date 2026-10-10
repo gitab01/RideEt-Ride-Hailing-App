@@ -39,7 +39,7 @@ export default function DriversPage() {
   const totalPages: number = data?.totalPages ?? 0
 
   const filtered = drivers.filter(d =>
-    !search || `${d.user?.firstName} ${d.user?.lastName} ${d.licensePlate}`.toLowerCase().includes(search.toLowerCase())
+    !search || `${d.fullName} ${d.phone} ${d.licensePlate}`.toLowerCase().includes(search.toLowerCase())
   )
 
   return (
@@ -88,8 +88,8 @@ export default function DriversPage() {
               ) : filtered.map((d: any) => (
                 <tr key={d.id} className="hover:bg-gray-50">
                   <td className="py-3 pr-4">
-                    <div className="font-medium text-gray-900">{d.user?.firstName} {d.user?.lastName}</div>
-                    <div className="text-xs text-gray-500">{d.user?.email}</div>
+                    <div className="font-medium text-gray-900">{d.fullName}</div>
+                    <div className="text-xs text-gray-500">{d.email}</div>
                   </td>
                   <td className="py-3 pr-4">{d.vehicleColor} {d.vehicleMake} {d.vehicleModel}</td>
                   <td className="py-3 pr-4 font-mono">{d.licensePlate}</td>

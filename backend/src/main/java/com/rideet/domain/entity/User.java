@@ -1,5 +1,7 @@
 package com.rideet.domain.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.rideet.domain.enums.UserRole;
 import jakarta.persistence.*;
 import lombok.*;
@@ -37,6 +39,7 @@ public class User implements UserDetails {
     private String phone;
 
     @Column(nullable = false)
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password;
 
     @Enumerated(EnumType.STRING)
@@ -68,6 +71,13 @@ public class User implements UserDetails {
     @Builder.Default
     private Double walletBalance = 0.0;
 
+    /** Running average of the stars this account received as a passenger. */
+    @Builder.Default
+    private Double rating = 5.0;
+
+    @Builder.Default
+    private Integer totalRatings = 0;
+
     // FCM push notification token
     private String fcmToken;
 
@@ -83,6 +93,7 @@ public class User implements UserDetails {
     }
 
     @Override
+    @JsonIgnore
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
     }

@@ -5,6 +5,9 @@ backend/.mvn/
 *.jar
 *.war
 
+# Locally stored onboarding uploads (real documents, never source)
+backend/uploads/
+
 # Node / React
 admin-dashboard/node_modules/
 admin-dashboard/dist/
