@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import DriversPage from './pages/DriversPage'
+import FaresPage from './pages/FaresPage'
 import UsersPage from './pages/UsersPage'
 import RidesPage from './pages/RidesPage'
 import LiveMapPage from './pages/LiveMapPage'
@@ -22,6 +23,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="drivers"   element={<DriversPage />} />
+          <Route path="fares"     element={<FaresPage />} />
           <Route path="users"     element={<UsersPage />} />
           <Route path="rides"     element={<RidesPage />} />
           <Route path="live-map"  element={<LiveMapPage />} />

@@ -46,6 +46,10 @@ public class SecurityConfig {
                 auth.requestMatchers(
                     "/auth/register",
                     "/auth/login",
+                    "/auth/otp/send",
+                    "/auth/otp/verify",
+                    "/auth/password-reset/send",
+                    "/auth/password-reset/confirm",
                     "/auth/refresh",
                     "/actuator/health",
                     "/ws/**",

@@ -27,8 +27,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   GoogleMapController? _mapController;
   LatLng _position = _fallbackHome;
   Map<String, dynamic>? _profile;
+  Map<String, dynamic>? _week;
   double _todayEarnings = 0;
-  int _todayTrips = 0;
   Timer? _pingTimer;
   StreamSubscription? _pushes;
   bool _sheetOpen = false;
@@ -43,7 +43,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     _ws.connect();
     _pushes = _ws.pushes.listen(_onPush);
     _loadProfile();
-    _loadToday();
+    _loadWeek();
     _startPinging();
   }
 
@@ -67,28 +67,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
   }
 
-  /// Today's takings are summed from the trip list rather than trusted from a counter,
-  /// because the counter only moves when a ride completes.
-  Future<void> _loadToday() async {
+  Future<void> _loadWeek() async {
     try {
-      final res = await ApiClient().dio.get('/driver/rides/history', queryParameters: {'size': 50});
-      final rides = (res.data['data']['content'] ?? []) as List;
-      final today = DateTime.now();
-      double sum = 0;
-      int count = 0;
-      for (final r in rides) {
-        if (r['status'] != 'COMPLETED') continue;
-        final at = DateTime.tryParse('${r['completedAt']}');
-        if (at == null) continue;
-        if (at.year == today.year && at.month == today.month && at.day == today.day) {
-          sum += (r['actualFare'] as num?)?.toDouble() ?? 0;
-          count++;
-        }
-      }
-      if (!mounted) return;
+      final res = await ApiClient().dio.get('/driver/earnings', queryParameters: {'days': 7});
+      final data = res.data['data'];
+      if (!mounted || data is! Map) return;
       setState(() {
-        _todayEarnings = sum;
-        _todayTrips = count;
+        _week = Map<String, dynamic>.from(data);
+        _todayEarnings = (data['todayEarnings'] as num?)?.toDouble() ?? 0;
       });
     } on DioException catch (_) {/* the stats simply stay at zero */}
   }
@@ -142,6 +128,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     switch (push.eventType) {
       case 'RIDE_OFFER':
         _showOffer(push.data as Map<String, dynamic>);
+        break;
+      case 'RIDE_ASSIGNED':
+        // Dispatched by the admin console: the ride is already this driver's, so there
+        // is no offer to accept — open the trip.
+        _sheetOpen = false;
+        if (push.rideId != null) context.go('/trip/${push.rideId}');
         break;
       case 'OFFER_CANCELLED':
         // Someone else took it; drop the sheet if it is showing this ride.
@@ -202,7 +194,10 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       body: Stack(
         children: [
           GoogleMap(
-            onMapCreated: (c) => _mapController = c,
+            onMapCreated: (c) {
+              _mapController = c;
+              c.animateCamera(CameraUpdate.newLatLngZoom(_position, 15));
+            },
             initialCameraPosition: CameraPosition(target: _position, zoom: 14),
             myLocationEnabled: true,
             myLocationButtonEnabled: false,
@@ -213,11 +208,22 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
             top: 0,
             left: 0,
             right: 0,
-            child: _StatusBar(
+            child: _IdentityCard(
+              name: _profile?['fullName']?.toString() ?? 'Driver',
               status: _status,
               verified: verified,
-              onToggle: verified ? _toggleOnline : null,
               onRefresh: _loadProfile,
+            ),
+          ),
+          Positioned(
+            bottom: 150,
+            left: 0,
+            right: 0,
+            child: _OnlineButton(
+              online: _isOnline,
+              enabled: verified,
+              status: _status,
+              onTap: _toggleOnline,
             ),
           ),
           Positioned(
@@ -226,9 +232,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
             right: 0,
             child: _TodayCard(
               earnings: _todayEarnings,
-              trips: _todayTrips,
-              rating: (_profile?['rating'] as num?)?.toDouble() ?? 5.0,
-              rides: (_profile?['totalRides'] as num?)?.toInt() ?? 0,
+              acceptanceRate: _week?['acceptanceRatePercent'] as int?,
+              wallet: (_week?['walletBalance'] as num?)?.toDouble(),
             ),
           ),
         ],
@@ -237,72 +242,132 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   }
 }
 
-class _StatusBar extends StatelessWidget {
+class _IdentityCard extends StatelessWidget {
+  final String name;
   final String status;
   final bool verified;
-  final VoidCallback? onToggle;
   final VoidCallback onRefresh;
 
-  const _StatusBar({
+  const _IdentityCard({
+    required this.name,
     required this.status,
     required this.verified,
-    required this.onToggle,
     required this.onRefresh,
   });
 
   @override
   Widget build(BuildContext context) {
-    final online = status == 'ONLINE' || status == 'ON_TRIP';
-    final color = online ? AppTheme.onlineColor : AppTheme.offlineColor;
     return Container(
       color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(20, 52, 20, 14),
+      padding: const EdgeInsets.fromLTRB(16, 50, 8, 14),
       child: Row(
         children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: AppTheme.primaryColor,
+            child: Text(
+              name.isEmpty ? 'D' : name.substring(0, 1).toUpperCase(),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  switch (status) {
-                    'ON_TRIP' => 'On a trip',
-                    'SUSPENDED' => 'Account suspended',
-                    _ => online ? 'You are online' : 'You are offline',
-                  },
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: color),
-                ),
+                Text(name,
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
                 Text(
                   verified
                       ? switch (status) {
-                          'ON_TRIP' => 'Finish the trip to take another',
-                          'SUSPENDED' => 'Contact RideEt support',
-                          _ => online ? 'Receiving ride offers' : 'Go online to receive offers',
+                          'ON_TRIP' => 'On a trip',
+                          'SUSPENDED' => 'Account suspended',
+                          'ONLINE' => 'Online — receiving requests',
+                          _ => 'Offline',
                         }
                       : 'Verify your documents to go online',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: verified ? Colors.grey.shade600 : AppTheme.errorColor),
                 ),
               ],
             ),
           ),
           IconButton(onPressed: onRefresh, icon: const Icon(Icons.refresh)),
-          Switch.adaptive(value: online, onChanged: onToggle == null ? null : (_) => onToggle!()),
         ],
       ),
+    );
+  }
+}
+
+class _OnlineButton extends StatelessWidget {
+  final bool online;
+  final bool enabled;
+  final String status;
+  final VoidCallback onTap;
+
+  const _OnlineButton({
+    required this.online,
+    required this.enabled,
+    required this.status,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = online ? AppTheme.onlineColor : AppTheme.offlineColor;
+    final caption = !enabled
+        ? 'Documents pending review'
+        : switch (status) {
+            'ON_TRIP' => 'Finish the trip to go back online',
+            'SUSPENDED' => 'Contact RideEt support',
+            _ => online ? 'Online — tap to go offline' : 'Offline — Tap to start receiving requests',
+          };
+
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: enabled && status != 'ON_TRIP' && status != 'SUSPENDED' ? onTap : null,
+          child: Container(
+            width: 104,
+            height: 104,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+              boxShadow: const [BoxShadow(blurRadius: 14, color: Colors.black26)],
+              border: Border.all(color: color, width: 6),
+            ),
+            child: Center(
+              child: Text(
+                online ? 'GO\nOFFLINE' : 'GO\nONLINE',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: color, fontWeight: FontWeight.bold, fontSize: 15, height: 1.2),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          color: Colors.white,
+          child: Text(caption,
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+        ),
+      ],
     );
   }
 }
 
 class _TodayCard extends StatelessWidget {
   final double earnings;
-  final int trips;
-  final double rating;
-  final int rides;
+  final int? acceptanceRate;
+  final double? wallet;
 
   const _TodayCard({
     required this.earnings,
-    required this.trips,
-    required this.rating,
-    required this.rides,
+    required this.acceptanceRate,
+    required this.wallet,
   });
 
   @override
@@ -311,25 +376,30 @@ class _TodayCard extends StatelessWidget {
       color: Colors.white,
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 26),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _Stat(
-            label: "Today's ETB",
-            value: earnings.toStringAsFixed(0),
-            icon: Icons.payments_outlined,
-            color: AppTheme.onlineColor,
+          Expanded(
+            child: _Stat(
+              label: "Today's Earnings",
+              value: 'ETB ${earnings.toStringAsFixed(0)}',
+              icon: Icons.payments_outlined,
+              color: AppTheme.onlineColor,
+            ),
           ),
-          _Stat(
-            label: 'Trips today',
-            value: '$trips',
-            icon: Icons.directions_car_outlined,
-            color: AppTheme.primaryColor,
+          Expanded(
+            child: _Stat(
+              label: 'Acceptance Rate',
+              value: acceptanceRate == null ? '—' : '$acceptanceRate%',
+              icon: Icons.thumb_up_outlined,
+              color: AppTheme.primaryColor,
+            ),
           ),
-          _Stat(
-            label: 'Rating ($rides)',
-            value: rating.toStringAsFixed(1),
-            icon: Icons.star_outline,
-            color: Colors.amber,
+          Expanded(
+            child: _Stat(
+              label: 'Wallet',
+              value: wallet == null ? '—' : 'ETB ${wallet!.toStringAsFixed(0)}',
+              icon: Icons.account_balance_wallet_outlined,
+              color: Colors.amber.shade700,
+            ),
           ),
         ],
       ),

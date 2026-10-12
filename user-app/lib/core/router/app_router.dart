@@ -7,6 +7,7 @@ import '../../features/auth/screens/login_screen.dart';
 import '../../features/auth/screens/register_screen.dart';
 import '../../features/auth/screens/otp_screen.dart';
 import '../../features/home/screens/home_screen.dart';
+import '../../features/home/bloc/home_bloc.dart';
 import '../../features/booking/screens/booking_screen.dart';
 import '../../features/booking/screens/ride_tracking_screen.dart';
 import '../../features/booking/screens/ride_complete_screen.dart';
@@ -36,7 +37,12 @@ class AppRouter {
           GoRoute(path: '/notifications', builder: (_, __) => const NotificationsScreen()),
         ],
       ),
-      GoRoute(path: '/booking', builder: (_, __) => const BookingScreen()),
+      GoRoute(
+        path: '/booking',
+        builder: (_, state) => BookingScreen(
+          initialDestination: state.extra is RecentPlace ? state.extra as RecentPlace : null,
+        ),
+      ),
       GoRoute(
         path: '/tracking/:rideId',
         builder: (_, state) => RideTrackingScreen(

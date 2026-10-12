@@ -1,16 +1,17 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Car, Users, List, Map, LogOut, Menu, X
+  LayoutDashboard, Car, Users, List, Map, LogOut, Menu, X, SlidersHorizontal
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '../store/authStore'
 
 const nav = [
-  { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
-  { to: '/live-map',  label: 'Live Map',   icon: Map             },
-  { to: '/rides',     label: 'Rides',      icon: List            },
-  { to: '/drivers',   label: 'Drivers',    icon: Car             },
-  { to: '/users',     label: 'Users',      icon: Users           },
+  { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard   },
+  { to: '/live-map',  label: 'Live Map',   icon: Map               },
+  { to: '/rides',     label: 'Rides',      icon: List              },
+  { to: '/drivers',   label: 'Drivers',    icon: Car               },
+  { to: '/fares',     label: 'Fares',      icon: SlidersHorizontal },
+  { to: '/users',     label: 'Users',      icon: Users             },
 ]
 
 export default function Layout() {

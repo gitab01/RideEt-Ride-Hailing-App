@@ -27,6 +27,21 @@ class AuthRegisterRequested extends AuthEvent {
   List<Object?> get props => [data];
 }
 
+class AuthOtpSendRequested extends AuthEvent {
+  final String phone;
+  AuthOtpSendRequested(this.phone);
+  @override
+  List<Object?> get props => [phone];
+}
+
+class AuthOtpVerifyRequested extends AuthEvent {
+  final String phone;
+  final String code;
+  AuthOtpVerifyRequested(this.phone, this.code);
+  @override
+  List<Object?> get props => [phone, code];
+}
+
 class AuthLogoutRequested extends AuthEvent {}
 class AuthCheckRequested extends AuthEvent {}
 
@@ -44,6 +59,18 @@ class AuthAuthenticated extends AuthState {
   @override
   List<Object?> get props => [user];
 }
+
+/// A login code is on its way. [devCode] is only set on the dev profile, where the
+/// backend returns the code it generated because there is no SMS gateway to call.
+class AuthOtpSent extends AuthState {
+  final String phone;
+  final int expiresInSeconds;
+  final String? devCode;
+  AuthOtpSent(this.phone, this.expiresInSeconds, this.devCode);
+  @override
+  List<Object?> get props => [phone, expiresInSeconds, devCode];
+}
+
 class AuthUnauthenticated extends AuthState {}
 class AuthError extends AuthState {
   final String message;
@@ -60,6 +87,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   AuthBloc() : super(AuthInitial()) {
     on<AuthCheckRequested>(_onCheckAuth);
     on<AuthLoginRequested>(_onLogin);
+    on<AuthOtpSendRequested>(_onSendOtp);
+    on<AuthOtpVerifyRequested>(_onVerifyOtp);
     on<AuthRegisterRequested>(_onRegister);
     on<AuthLogoutRequested>(_onLogout);
   }
@@ -87,6 +116,35 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       emit(AuthAuthenticated(data));
     } on DioException catch (e) {
       emit(AuthError(_message(e, 'Login failed')));
+    }
+  }
+
+  Future<void> _onSendOtp(AuthOtpSendRequested event, Emitter<AuthState> emit) async {
+    emit(AuthLoading());
+    try {
+      final response = await _api.dio.post('/auth/otp/send', data: {'phone': event.phone});
+      final data = response.data['data'] as Map<String, dynamic>;
+      emit(AuthOtpSent(
+        data['phone'] as String? ?? event.phone,
+        (data['expiresInSeconds'] as num?)?.toInt() ?? 300,
+        data['devCode'] as String?,
+      ));
+    } on DioException catch (e) {
+      emit(AuthError(_message(e, 'Could not send the code')));
+    }
+  }
+
+  Future<void> _onVerifyOtp(AuthOtpVerifyRequested event, Emitter<AuthState> emit) async {
+    emit(AuthLoading());
+    try {
+      final response = await _api.dio.post('/auth/otp/verify',
+          data: {'phone': event.phone, 'code': event.code});
+      final data = response.data['data'];
+      await _api.saveTokens(data['accessToken'], data['refreshToken']);
+      await WebSocketService().connect();
+      emit(AuthAuthenticated(data));
+    } on DioException catch (e) {
+      emit(AuthError(_message(e, 'That code is not valid')));
     }
   }
 

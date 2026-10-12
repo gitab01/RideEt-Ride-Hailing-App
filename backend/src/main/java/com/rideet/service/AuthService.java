@@ -5,6 +5,7 @@ import com.rideet.domain.enums.UserRole;
 import com.rideet.dto.request.LoginRequest;
 import com.rideet.dto.request.RegisterRequest;
 import com.rideet.dto.response.AuthResponse;
+import com.rideet.dto.response.OtpChallengeResponse;
 import com.rideet.exception.BadRequestException;
 import com.rideet.repository.DriverRepository;
 import com.rideet.repository.UserRepository;
@@ -22,11 +23,15 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class AuthService {
 
+    private static final String LOGIN_OTP_PURPOSE = "LOGIN";
+    private static final String RESET_OTP_PURPOSE = "RESET";
+
     private final UserRepository userRepository;
     private final DriverRepository driverRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
+    private final OtpService otpService;
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -56,11 +61,16 @@ public class AuthService {
     }
 
     public AuthResponse login(LoginRequest request) {
+        String email = resolveEmail(request);
+        if (request.getPassword() == null || request.getPassword().isBlank()) {
+            throw new BadRequestException("Password is required");
+        }
+
         authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
+                new UsernamePasswordAuthenticationToken(email, request.getPassword())
         );
 
-        User user = userRepository.findByEmail(request.getEmail())
+        User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new BadRequestException("User not found"));
 
         String accessToken = jwtService.generateToken(user);
@@ -68,6 +78,80 @@ public class AuthService {
 
         log.info("User logged in: {}", user.getEmail());
         return buildAuthResponse(user, accessToken, refreshToken);
+    }
+
+    /** Both mobile apps collect a phone number; the account table is keyed on email. */
+    private String resolveEmail(LoginRequest request) {
+        boolean hasEmail = request.getEmail() != null && !request.getEmail().isBlank();
+        boolean hasPhone = request.getPhone() != null && !request.getPhone().isBlank();
+
+        if (hasEmail) return request.getEmail();
+        if (hasPhone) {
+            return userRepository.findByPhone(request.getPhone())
+                    .orElseThrow(() -> new BadRequestException("No account found for this phone number"))
+                    .getEmail();
+        }
+        throw new BadRequestException("Provide an email or a phone number");
+    }
+
+    /**
+     * Starts a passwordless sign-in. The number must already belong to an account — creating one
+     * from an OTP would let anyone claim a stranger's phone number.
+     */
+    @Transactional
+    public OtpChallengeResponse sendLoginOtp(String phone) {
+        userRepository.findByPhone(phone)
+                .orElseThrow(() -> new BadRequestException("No account found for this phone number"));
+
+        otpService.generateOtp(phone, LOGIN_OTP_PURPOSE);
+
+        return OtpChallengeResponse.builder()
+                .phone(phone)
+                .expiresInSeconds((int) otpService.secondsLeft(phone, LOGIN_OTP_PURPOSE))
+                .devCode(otpService.activeDevCode())
+                .build();
+    }
+
+    @Transactional
+    public AuthResponse loginWithOtp(String phone, String code) {
+        otpService.verifyOtp(phone, code, LOGIN_OTP_PURPOSE);
+
+        User user = userRepository.findByPhone(phone)
+                .orElseThrow(() -> new BadRequestException("No account found for this phone number"));
+
+        String accessToken = jwtService.generateToken(user);
+        String refreshToken = jwtService.generateRefreshToken(user);
+
+        log.info("User signed in with OTP: {}", user.getEmail());
+        return buildAuthResponse(user, accessToken, refreshToken);
+    }
+
+    /**
+     * Starts a password reset. Silently refusing an unknown number would be friendlier to the
+     * account owner, but the apps need to tell the driver why nothing arrived, so it answers.
+     */
+    @Transactional
+    public OtpChallengeResponse sendPasswordResetOtp(String phone) {
+        userRepository.findByPhone(phone)
+                .orElseThrow(() -> new BadRequestException("No account found for this phone number"));
+
+        otpService.generateOtp(phone, RESET_OTP_PURPOSE);
+        return OtpChallengeResponse.builder()
+                .phone(phone)
+                .expiresInSeconds((int) otpService.secondsLeft(phone, RESET_OTP_PURPOSE))
+                .devCode(otpService.activeDevCode())
+                .build();
+    }
+
+    @Transactional
+    public void resetPassword(String phone, String code, String newPassword) {
+        otpService.verifyOtp(phone, code, RESET_OTP_PURPOSE);
+
+        User user = userRepository.findByPhone(phone)
+                .orElseThrow(() -> new BadRequestException("No account found for this phone number"));
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+        log.info("Password reset for {}", user.getEmail());
     }
 
     public AuthResponse refreshToken(String refreshToken) {

@@ -6,7 +6,6 @@ class AppTheme {
   static const Color onlineColor  = Color(0xFF2E7D32);
   static const Color offlineColor = Color(0xFF757575);
   static const Color errorColor   = Color(0xFFD32F2F);
-  static const Color bgColor      = Color(0xFFF5F5F5);
 
   static ThemeData driverTheme = ThemeData(
     useMaterial3: true,
@@ -15,10 +14,10 @@ class AppTheme {
       primary: primaryColor,
       secondary: accentColor,
     ),
-    scaffoldBackgroundColor: bgColor,
+    scaffoldBackgroundColor: Colors.white,
     appBarTheme: const AppBarTheme(
-      backgroundColor: primaryColor,
-      foregroundColor: Colors.white,
+      backgroundColor: Colors.white,
+      foregroundColor: primaryColor,
       elevation: 0,
       centerTitle: true,
     ),

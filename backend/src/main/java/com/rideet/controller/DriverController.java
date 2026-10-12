@@ -6,6 +6,7 @@ import com.rideet.dto.request.DriverRegisterRequest;
 import com.rideet.dto.request.LocationUpdateRequest;
 import com.rideet.dto.request.RatingRequest;
 import com.rideet.dto.response.ApiResponse;
+import com.rideet.dto.response.DriverEarningsResponse;
 import com.rideet.dto.response.DriverResponse;
 import com.rideet.dto.response.RideResponse;
 import com.rideet.matching.RideStateMachine;
@@ -57,6 +58,14 @@ public class DriverController {
     @GetMapping("/profile")
     public ResponseEntity<ApiResponse<DriverResponse>> getProfile(@AuthenticationPrincipal User user) {
         return ResponseEntity.ok(ApiResponse.success(driverService.getProfile(user.getId())));
+    }
+
+    /** Today, the requested window and lifetime totals, summed from this driver's completed rides. */
+    @GetMapping("/earnings")
+    public ResponseEntity<ApiResponse<DriverEarningsResponse>> earnings(
+            @AuthenticationPrincipal User user,
+            @RequestParam(defaultValue = "7") int days) {
+        return ResponseEntity.ok(ApiResponse.success(driverService.earnings(user.getId(), days)));
     }
 
     @PostMapping("/online")

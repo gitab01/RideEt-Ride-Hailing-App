@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -23,6 +24,7 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
   StreamSubscription<RideUpdate>? _pushes;
   Timer? _fallbackRefresh;
   int _driversContacted = 0;
+  LatLng? _driverPosition;
 
   /// Addis Ababa centre; the camera moves to the ride as soon as it is known.
   static const CameraPosition _initialCamera =
@@ -58,6 +60,7 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
     final lng = update.longitude;
     if (lat == null || lng == null) return;
     final position = LatLng(lat, lng);
+    _driverPosition = position;
     setState(() {
       _markers.removeWhere((m) => m.markerId.value == 'driver');
       _markers.add(Marker(
@@ -185,9 +188,11 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
                             if (searching && _driversContacted > 0)
                               Text('Contacted $_driversContacted driver(s) so far',
                                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                            if (!searching && ride?['driverName'] != null)
-                              Text(ride!['driverName'],
-                                  style: TextStyle(color: Colors.grey.shade600)),
+                            if (!searching && ride?['destinationAddress'] != null)
+                              Text('En route to ${ride!['destinationAddress']}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
                           ],
                         ),
                       ),
@@ -210,7 +215,7 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
               if (ride != null && ride['driverName'] != null)
                 Positioned(
                   bottom: 0, left: 0, right: 0,
-                  child: _DriverInfoCard(ride: ride),
+                  child: _DriverInfoCard(ride: ride, driverPosition: _driverPosition),
                 ),
             ],
           ),
@@ -222,7 +227,29 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
 
 class _DriverInfoCard extends StatelessWidget {
   final Map<String, dynamic> ride;
-  const _DriverInfoCard({required this.ride});
+  final LatLng? driverPosition;
+
+  const _DriverInfoCard({required this.ride, this.driverPosition});
+
+  /// Everything a trusted contact needs, as one pasteable message.
+  String _shareText() {
+    final driver = ride['driverName']?.toString() ?? 'your driver';
+    final plate = ride['licensePlate']?.toString() ?? 'plate not shown';
+    final where = driverPosition == null
+        ? 'location not reported yet'
+        : 'https://www.google.com/maps/search/?api=1'
+            '&query=${driverPosition!.latitude.toStringAsFixed(6)},'
+            '${driverPosition!.longitude.toStringAsFixed(6)}';
+    return 'RideEt trip with $driver ($plate). Current position: $where';
+  }
+
+  Future<void> _shareTrip(BuildContext context) async {
+    final text = _shareText();
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Trip details copied — paste them into any chat')));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -293,6 +320,17 @@ class _DriverInfoCard extends StatelessWidget {
                           color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => _shareTrip(context),
+            icon: const Icon(Icons.ios_share, size: 18),
+            label: const Text('Share Trip'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 44),
+              side: const BorderSide(color: AppTheme.primaryColor),
+              foregroundColor: AppTheme.primaryColor,
             ),
           ),
 

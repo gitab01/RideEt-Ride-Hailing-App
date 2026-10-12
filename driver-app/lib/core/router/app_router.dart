@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/auth/screens/driver_login_screen.dart';
-import '../../features/auth/screens/driver_register_screen.dart';
+import '../../features/auth/screens/forgot_password_screen.dart';
 import '../../features/auth/screens/splash_screen.dart';
 import '../../features/home/screens/driver_home_screen.dart';
 import '../../features/trip/screens/trip_screen.dart';
@@ -16,7 +16,7 @@ class AppRouter {
     routes: [
       GoRoute(path: '/splash', builder: (_, __) => const DriverSplashScreen()),
       GoRoute(path: '/login',  builder: (_, __) => const DriverLoginScreen()),
-      GoRoute(path: '/register', builder: (_, __) => const DriverRegisterScreen()),
+      GoRoute(path: '/forgot-password', builder: (_, __) => const ForgotPasswordScreen()),
       GoRoute(path: '/documents', builder: (_, __) => const DocumentsScreen()),
       ShellRoute(
         builder: (_, __, child) => DriverShell(child: child),

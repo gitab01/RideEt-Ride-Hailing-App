@@ -5,12 +5,14 @@ import com.rideet.domain.entity.Ride;
 import com.rideet.domain.enums.DriverStatus;
 import com.rideet.domain.enums.RideStatus;
 import com.rideet.domain.enums.VehicleType;
+import com.rideet.dto.response.FareEstimateResponse;
 import com.rideet.dto.response.RideOfferResponse;
 import com.rideet.exception.BadRequestException;
 import com.rideet.exception.ResourceNotFoundException;
 import com.rideet.mapper.RideViewMapper;
 import com.rideet.repository.DriverRepository;
 import com.rideet.repository.RideRepository;
+import com.rideet.service.FareCalculationService;
 import com.rideet.websocket.RideWebSocketService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -81,6 +83,7 @@ public class MatchingService {
     private final RideStateMachine stateMachine;
     private final RideWebSocketService webSocketService;
     private final RideViewMapper rideViewMapper;
+    private final FareCalculationService fareCalculationService;
 
     @Value("${matching.max-radius-km:12.0}")
     private double maxRadiusKm;
@@ -194,6 +197,7 @@ public class MatchingService {
         ride.setDriverAssignedAt(LocalDateTime.now());
         ride.setRideStartOtp(String.format("%06d", random.nextInt(1_000_000)));
         driver.setStatus(DriverStatus.ON_TRIP);
+        driver.setOffersAccepted(driver.getOffersAccepted() + 1);
         driverRepository.save(driver);
         rideRepository.save(ride);
 
@@ -206,6 +210,77 @@ public class MatchingService {
                 rideViewMapper.toResponse(ride, ride.getPassenger().getId()));
         webSocketService.broadcastToAdmin("RIDE_ASSIGNED", Map.of("rideId", rideId, "driverId", driverId));
         log.info("Ride {} accepted by driver {}", rideId, driverId);
+        return ride;
+    }
+
+    /**
+     * Manual dispatch from the admin console. The ride is claimed with the same compare-and-set
+     * as {@link #accept}, so an admin override and a driver tapping accept cannot both win.
+     *
+     * <p>Unlike a driver-initiated accept, a different vehicle class is allowed here — sending the
+     * only car that is free is the point of dispatch — so the ride is re-tiered to the vehicle that
+     * is actually coming and re-quoted from that tier's pricing. The rider is charged for the car
+     * they get, not for the car they asked for, and is told about it.
+     */
+    @Transactional
+    public Ride adminAssign(Long driverId, Long rideId) {
+        int won = rideRepository.compareAndSetStatus(rideId, RideStatus.SEARCHING, RideStatus.DRIVER_ASSIGNED);
+        if (won == 0) {
+            throw new BadRequestException("This ride is not waiting for a driver");
+        }
+
+        Ride ride = rideRepository.findById(rideId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
+        Driver driver = driverRepository.findByIdWithUser(driverId)
+                .orElseThrow(() -> new ResourceNotFoundException("Driver not found"));
+
+        if (driver.getStatus() != DriverStatus.ONLINE || !driver.isDocumentsVerified()) {
+            rideRepository.compareAndSetStatus(rideId, RideStatus.DRIVER_ASSIGNED, RideStatus.SEARCHING);
+            throw new BadRequestException(driver.getStatus() != DriverStatus.ONLINE
+                    ? "Driver is not available (status " + driver.getStatus() + ")"
+                    : "Driver documents are not approved");
+        }
+
+        VehicleType requested = ride.getVehicleType();
+        boolean reTiered = driver.getVehicleType() != requested;
+        if (reTiered) {
+            double distanceKm = ride.getDistanceKm() != null ? ride.getDistanceKm() : 0.0;
+            int durationMinutes = ride.getDurationMinutes() != null ? ride.getDurationMinutes() : 0;
+            FareEstimateResponse requote = fareCalculationService.calculateFare(
+                    distanceKm, durationMinutes, driver.getVehicleType());
+            ride.setVehicleType(driver.getVehicleType());
+            ride.setEstimatedFare(requote.getEstimatedFare());
+            ride.setSurgeMultiplier(requote.getSurgeMultiplier());
+        }
+
+        ride.setDriver(driver);
+        ride.setDriverAssignedAt(LocalDateTime.now());
+        ride.setRideStartOtp(String.format("%06d", random.nextInt(1_000_000)));
+        driver.setStatus(DriverStatus.ON_TRIP);
+        driver.setOffersAccepted(driver.getOffersAccepted() + 1);
+        driverRepository.save(driver);
+        rideRepository.save(ride);
+
+        stateMachine.recordTransition(ride, RideStatus.SEARCHING, RideStatus.DRIVER_ASSIGNED,
+                RideStateMachine.ACTOR_SYSTEM,
+                "admin dispatch to driver " + driverId + (reTiered
+                        ? " (re-tiered " + requested + " -> " + driver.getVehicleType() + ")"
+                        : ""));
+        presenceCache.statusChanged(driver.getUser().getId(), DriverStatus.ON_TRIP);
+        closeRound(rideId, "ADMIN_ASSIGNED");
+
+        if (reTiered) {
+            webSocketService.toPassenger(ride.getPassenger().getId(), "RIDE_REQUOTED", rideId,
+                    rideViewMapper.toResponse(ride, ride.getPassenger().getId()));
+        }
+        // Not an offer: the ride is already theirs, so the driver app opens it as the current trip.
+        webSocketService.toDriver(driver.getUser().getId(), "RIDE_ASSIGNED", rideId,
+                rideViewMapper.toResponse(ride, driver.getUser().getId()));
+        webSocketService.toPassenger(ride.getPassenger().getId(), "DRIVER_ASSIGNED", rideId,
+                rideViewMapper.toResponse(ride, ride.getPassenger().getId()));
+        webSocketService.broadcastToAdmin("RIDE_ASSIGNED", Map.of("rideId", rideId, "driverId", driverId));
+        log.info("Ride {} manually dispatched to driver {}{}", rideId, driverId,
+                reTiered ? " after re-tiering" : "");
         return ride;
     }
 

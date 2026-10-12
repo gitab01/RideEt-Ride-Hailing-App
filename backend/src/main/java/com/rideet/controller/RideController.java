@@ -5,6 +5,7 @@ import com.rideet.dto.request.RatingRequest;
 import com.rideet.dto.request.RideRequest;
 import com.rideet.dto.response.ApiResponse;
 import com.rideet.dto.response.FareEstimateResponse;
+import com.rideet.dto.response.RideOptionResponse;
 import com.rideet.dto.response.RideResponse;
 import com.rideet.matching.RideStateMachine;
 import com.rideet.service.RideService;
@@ -35,6 +36,18 @@ public class RideController {
 
         FareEstimateResponse estimate = rideService.estimateFare(pickupLat, pickupLng, destLat, destLng);
         return ResponseEntity.ok(ApiResponse.success(estimate));
+    }
+
+    /** Priced option per vehicle tier, with the pickup ETA of that tier's nearest online driver. */
+    @GetMapping("/options")
+    public ResponseEntity<ApiResponse<List<RideOptionResponse>>> estimateOptions(
+            @RequestParam double pickupLat,
+            @RequestParam double pickupLng,
+            @RequestParam double destLat,
+            @RequestParam double destLng) {
+
+        List<RideOptionResponse> options = rideService.estimateOptions(pickupLat, pickupLng, destLat, destLng);
+        return ResponseEntity.ok(ApiResponse.success(options));
     }
 
     @PostMapping("/request")

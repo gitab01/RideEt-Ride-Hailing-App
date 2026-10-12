@@ -50,8 +50,10 @@ google:
 otp:
   expiration-minutes: 5
   length: 6
-  # Without an SMS gateway configured, codes are logged instead of sent and this
-  # code is accepted for any number so the apps can be exercised end to end.
+  # With no SMS gateway configured, codes are logged rather than sent. otp.dev-mode makes
+  # otp.dev-code work for any number so the apps can be exercised end to end; the dev profile
+  # below turns it on and everything else leaves it off.
+  dev-mode: false
   dev-code: ${OTP_DEV_CODE:123456}
 
 # Matching engine
@@ -62,6 +64,8 @@ matching:
   candidates-per-round: 5         # how many nearest drivers an offer round touches
 
 # Fare Configuration
+# Only used to seed and, on an unseeded database, to fall back to. The live numbers come from the
+# vehicle_tiers table, which the admin Fares page reads and writes per service tier.
 fare:
   base-fare: 2.50
   per-km-rate: 1.20
@@ -101,6 +105,10 @@ spring:
     console:
       enabled: true
       path: /h2-console
+
+# No SMS gateway in local development, so the fixed otp.dev-code is accepted for any number.
+otp:
+  dev-mode: true
 
 ---
 # Default / production: Microsoft SQL Server.

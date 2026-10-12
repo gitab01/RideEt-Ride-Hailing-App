@@ -86,6 +86,10 @@ class _TripScreenState extends State<TripScreen> {
 
         return _TripScaffold(
           statusLabel: _statusLabel(ride?['status']),
+          detailLabel: switch (ride?['status']) {
+            'IN_PROGRESS' => ride?['destinationAddress']?.toString(),
+            _ => ride?['pickupAddress']?.toString(),
+          },
           map: GoogleMap(
             onMapCreated: (c) {
               _mapController = c;
@@ -144,7 +148,8 @@ class _TripScreenState extends State<TripScreen> {
         ],
       ),
     );
-    if (yes == true) ctx.read<TripBloc>().add(TripCancelled(widget.rideId, reason: 'driver cancelled'));
+    if (yes != true || !ctx.mounted) return;
+    ctx.read<TripBloc>().add(TripCancelled(widget.rideId, reason: 'driver cancelled'));
   }
 }
 
@@ -152,9 +157,10 @@ class _TripScaffold extends StatelessWidget {
   final Widget? map;
   final Widget? panel;
   final String? statusLabel;
+  final String? detailLabel;
   final Widget child;
 
-  _TripScaffold({this.map, this.panel, this.statusLabel, Widget? child})
+  _TripScaffold({this.map, this.panel, this.statusLabel, this.detailLabel, Widget? child})
       : child = child ?? const SizedBox.shrink();
 
   @override
@@ -177,10 +183,22 @@ class _TripScaffold extends StatelessWidget {
                       onPressed: () => context.go('/home'),
                       icon: const Icon(Icons.arrow_back, color: Colors.white)),
                   Expanded(
-                    child: Text(statusLabel ?? '',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Text(statusLabel ?? '',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold)),
+                        if (detailLabel != null)
+                          Text(detailLabel!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      ],
+                    ),
                   ),
                   const SizedBox(width: 48),
                 ],
@@ -291,14 +309,21 @@ class _TripPanel extends StatelessWidget {
               enableActiveFill: true,
               keyboardType: TextInputType.number,
             ),
-            const SizedBox(height: 10),
-            _PrimaryButton(
-                label: 'Start ride',
-                enabled: otp.length == 6,
-                onPressed: onStart),
+            const SizedBox(height: 14),
+            _SlideToAction(
+              label: 'SLIDE TO START TRIP',
+              disabledLabel: 'Enter the code to start',
+              enabled: otp.length == 6 && !busy,
+              onConfirm: onStart,
+            ),
           ] else if (status == 'IN_PROGRESS')
-            _PrimaryButton(
-                label: 'Complete ride', color: AppTheme.onlineColor, onPressed: onComplete),
+            _SlideToAction(
+              label: 'SLIDE TO COMPLETE RIDE',
+              disabledLabel: 'Completing…',
+              color: AppTheme.onlineColor,
+              enabled: !busy,
+              onConfirm: onComplete,
+            ),
           if (status == 'DRIVER_ASSIGNED' || status == 'DRIVER_ARRIVED') ...[
             const SizedBox(height: 8),
             TextButton(onPressed: onCancel, child: const Text('Cancel this ride')),
@@ -309,14 +334,98 @@ class _TripPanel extends StatelessWidget {
   }
 }
 
-class _PrimaryButton extends StatelessWidget {
+/// Deliberately has no tap handler — the whole point is that the action needs a drag.
+class _SlideToAction extends StatefulWidget {
   final String label;
+
+  /// Shown while the slider is locked, which differs per step.
+  final String disabledLabel;
   final Color color;
   final bool enabled;
+  final VoidCallback onConfirm;
+
+  const _SlideToAction({
+    required this.label,
+    required this.disabledLabel,
+    required this.enabled,
+    required this.onConfirm,
+    this.color = AppTheme.primaryColor,
+  });
+
+  @override
+  State<_SlideToAction> createState() => _SlideToActionState();
+}
+
+class _SlideToActionState extends State<_SlideToAction> {
+  static const double _thumb = 48;
+  double _dragged = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final travel = (constraints.maxWidth - _thumb - 8).clamp(0.0, double.infinity);
+      return GestureDetector(
+        onHorizontalDragUpdate: widget.enabled
+            ? (delta) => setState(() =>
+                _dragged = (_dragged + delta.delta.dx).clamp(0.0, travel))
+            : null,
+        onHorizontalDragEnd: widget.enabled
+            ? (_) {
+                final fired = travel > 0 && _dragged / travel > 0.85;
+                setState(() => _dragged = 0);
+                if (fired) widget.onConfirm();
+              }
+            : null,
+        child: Container(
+          height: 56,
+          decoration: BoxDecoration(
+            color: widget.enabled ? widget.color.withOpacity(0.12) : Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: _thumb + 16),
+                child: Text(
+                  widget.enabled ? widget.label : widget.disabledLabel,
+                  style: TextStyle(
+                      color: widget.enabled ? widget.color : Colors.grey.shade600,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Transform.translate(
+                    offset: Offset(_dragged, 0),
+                    child: Container(
+                      width: _thumb,
+                      height: _thumb,
+                      decoration: BoxDecoration(
+                        color: widget.enabled ? widget.color : Colors.grey.shade400,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.arrow_forward, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _PrimaryButton extends StatelessWidget {
+  final String label;
   final VoidCallback onPressed;
 
-  const _PrimaryButton(
-      {required this.label, this.color = AppTheme.primaryColor, this.enabled = true, required this.onPressed});
+  const _PrimaryButton({required this.label, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -324,10 +433,11 @@ class _PrimaryButton extends StatelessWidget {
       width: double.infinity,
       height: 50,
       child: FilledButton(
-        onPressed: enabled ? onPressed : null,
+        onPressed: onPressed,
         style: FilledButton.styleFrom(
-            backgroundColor: color, foregroundColor: Colors.white, shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+            backgroundColor: AppTheme.primaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
         child: Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
       ),
     );

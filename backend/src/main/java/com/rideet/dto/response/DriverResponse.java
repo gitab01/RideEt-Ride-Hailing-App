@@ -30,8 +30,15 @@ public class DriverResponse {
     private String vehicleColor;
     private VehicleType vehicleType;
 
+    private String driverLicenseUrl;
+    private String vehicleRegistrationUrl;
+    private String insuranceUrl;
+
     private DriverStatus status;
     private boolean documentsVerified;
+    private String verificationNote;
+    private Integer offersAccepted;
+    private Integer offersDeclined;
     private Double currentLatitude;
     private Double currentLongitude;
     private LocalDateTime lastLocationUpdate;

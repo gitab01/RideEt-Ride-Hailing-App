@@ -13,9 +13,9 @@ abstract class BookingEvent extends Equatable {
   List<Object?> get props => [];
 }
 
-class EstimateFareRequested extends BookingEvent {
+class RideOptionsRequested extends BookingEvent {
   final double pickupLat, pickupLng, destLat, destLng;
-  EstimateFareRequested(this.pickupLat, this.pickupLng, this.destLat, this.destLng);
+  RideOptionsRequested(this.pickupLat, this.pickupLng, this.destLat, this.destLng);
   @override
   List<Object?> get props => [pickupLat, pickupLng, destLat, destLng];
 }
@@ -62,11 +62,12 @@ class BookingInitial extends BookingState {}
 
 class BookingLoading extends BookingState {}
 
-class FareEstimated extends BookingState {
-  final Map<String, dynamic> estimate;
-  FareEstimated(this.estimate);
+/// One row per vehicle tier: fare for this trip plus that tier's nearest car.
+class RideOptionsLoaded extends BookingState {
+  final List<Map<String, dynamic>> options;
+  RideOptionsLoaded(this.options);
   @override
-  List<Object?> get props => [estimate];
+  List<Object?> get props => [options];
 }
 
 /// Waiting for a driver. The backend re-broadcasts this each widening round.
@@ -108,7 +109,7 @@ class BookingBloc extends Bloc<BookingEvent, BookingState> {
   StreamSubscription<RideUpdate>? _pushes;
 
   BookingBloc() : super(BookingInitial()) {
-    on<EstimateFareRequested>(_onEstimate);
+    on<RideOptionsRequested>(_onOptions);
     on<RideRequested>(_onRequest);
     on<RideStatusRefreshed>(_onRefresh);
     on<RideCancelled>(_onCancel);
@@ -136,18 +137,21 @@ class BookingBloc extends Bloc<BookingEvent, BookingState> {
     return super.close();
   }
 
-  Future<void> _onEstimate(EstimateFareRequested event, Emitter<BookingState> emit) async {
+  Future<void> _onOptions(RideOptionsRequested event, Emitter<BookingState> emit) async {
     emit(BookingLoading());
     try {
-      final response = await _api.dio.get('/rides/estimate', queryParameters: {
+      final response = await _api.dio.get('/rides/options', queryParameters: {
         'pickupLat': event.pickupLat,
         'pickupLng': event.pickupLng,
         'destLat': event.destLat,
         'destLng': event.destLng,
       });
-      emit(FareEstimated(response.data['data']));
+      final rows = response.data['data'];
+      emit(RideOptionsLoaded(rows is List
+          ? rows.map((row) => Map<String, dynamic>.from(row as Map)).toList()
+          : const []));
     } on DioException catch (e) {
-      emit(BookingError(_message(e, 'Failed to estimate fare')));
+      emit(BookingError(_message(e, 'Failed to load ride options')));
     }
   }
 

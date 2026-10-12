@@ -2,10 +2,13 @@ package com.rideet.service;
 
 import com.rideet.domain.entity.Driver;
 import com.rideet.domain.entity.DriverLocation;
+import com.rideet.domain.entity.Ride;
 import com.rideet.domain.entity.User;
 import com.rideet.domain.enums.DriverStatus;
+import com.rideet.domain.enums.RideStatus;
 import com.rideet.dto.request.DriverRegisterRequest;
 import com.rideet.dto.request.LocationUpdateRequest;
+import com.rideet.dto.response.DriverEarningsResponse;
 import com.rideet.dto.response.DriverResponse;
 import com.rideet.exception.BadRequestException;
 import com.rideet.exception.ResourceNotFoundException;
@@ -13,6 +16,7 @@ import com.rideet.matching.DriverLocationIndex;
 import com.rideet.matching.DriverPresenceCache;
 import com.rideet.matching.LocationWriteBuffer;
 import com.rideet.repository.DriverRepository;
+import com.rideet.repository.RideRepository;
 import com.rideet.repository.UserRepository;
 import com.rideet.websocket.RideWebSocketService;
 import lombok.RequiredArgsConstructor;
@@ -20,7 +24,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -30,6 +38,7 @@ public class DriverService {
 
     private final DriverRepository driverRepository;
     private final UserRepository userRepository;
+    private final RideRepository rideRepository;
     private final RideWebSocketService rideWebSocketService;
     private final DriverLocationIndex locationIndex;
     private final LocationWriteBuffer locationBuffer;
@@ -162,6 +171,69 @@ public class DriverService {
         return toResponse(getDriverByUserId(userId));
     }
 
+    /**
+     * Everything the driver's earnings screen shows, totalled from this driver's COMPLETED rides.
+     * Days with no work are still returned as zeroes so the chart cannot imply activity that did
+     * not happen, and acceptance rate stays null until the driver has answered an offer.
+     */
+    @Transactional(readOnly = true)
+    public DriverEarningsResponse earnings(Long userId, int windowDays) {
+        Driver driver = getDriverByUserId(userId);
+        int days = Math.min(Math.max(windowDays, 1), 60);
+        LocalDate today = LocalDate.now();
+
+        Map<LocalDate, long[]> perDay = new LinkedHashMap<>();
+        for (int i = days - 1; i >= 0; i--) {
+            perDay.put(today.minusDays(i), new long[]{0, 0});   // rides, cents
+        }
+
+        List<Ride> completed = rideRepository
+                .findByDriverIdAndStatusAndCompletedAtBetweenOrderByCompletedAtAsc(
+                        driver.getId(), RideStatus.COMPLETED,
+                        today.minusDays(days - 1L).atStartOfDay(),
+                        today.plusDays(1).atStartOfDay());
+
+        for (Ride ride : completed) {
+            long[] bucket = perDay.get(ride.getCompletedAt().toLocalDate());
+            if (bucket == null) continue;
+            bucket[0]++;
+            bucket[1] += Math.round((ride.getActualFare() == null ? 0.0 : ride.getActualFare()) * 100.0);
+        }
+
+        List<DriverEarningsResponse.DayEarnings> series = new ArrayList<>();
+        long windowRides = 0;
+        long windowCents = 0;
+        for (Map.Entry<LocalDate, long[]> entry : perDay.entrySet()) {
+            series.add(DriverEarningsResponse.DayEarnings.builder()
+                    .date(entry.getKey().toString())
+                    .rides((int) entry.getValue()[0])
+                    .amount(entry.getValue()[1] / 100.0)
+                    .build());
+            windowRides += entry.getValue()[0];
+            windowCents += entry.getValue()[1];
+        }
+
+        long[] todayBucket = perDay.get(today);
+        int answered = driver.getOffersAccepted() + driver.getOffersDeclined();
+
+        return DriverEarningsResponse.builder()
+                .todayEarnings(todayBucket[1] / 100.0)
+                .windowEarnings(windowCents / 100.0)
+                .lifetimeEarnings(driver.getTotalEarnings())
+                .walletBalance(driver.getUser().getWalletBalance())
+                .todayRides((int) todayBucket[0])
+                .windowRides((int) windowRides)
+                .totalRides(driver.getTotalRides())
+                .windowDays(days)
+                .rating(driver.getRating())
+                .totalRatings(driver.getTotalRatings())
+                .acceptanceRatePercent(answered == 0
+                        ? null
+                        : (int) Math.round(100.0 * driver.getOffersAccepted() / answered))
+                .days(series)
+                .build();
+    }
+
     public DriverResponse toResponse(Driver driver) {
         User user = driver.getUser();
         return DriverResponse.builder()
@@ -176,8 +248,14 @@ public class DriverService {
                 .licensePlate(driver.getLicensePlate())
                 .vehicleColor(driver.getVehicleColor())
                 .vehicleType(driver.getVehicleType())
+                .driverLicenseUrl(driver.getDriverLicenseUrl())
+                .vehicleRegistrationUrl(driver.getVehicleRegistrationUrl())
+                .insuranceUrl(driver.getInsuranceUrl())
                 .status(driver.getStatus())
                 .documentsVerified(driver.isDocumentsVerified())
+                .verificationNote(driver.getVerificationNote())
+                .offersAccepted(driver.getOffersAccepted())
+                .offersDeclined(driver.getOffersDeclined())
                 .currentLatitude(driver.getCurrentLatitude())
                 .currentLongitude(driver.getCurrentLongitude())
                 .lastLocationUpdate(driver.getLastLocationUpdate())

@@ -72,18 +72,28 @@ phone on the same Wi-Fi network.
 
 ## Seeded dev accounts
 
-| Email                  | Password        | Role      |
-|------------------------|-----------------|-----------|
-| `admin@rideet.com`     | `Admin@1234`    | ADMIN     |
-| `passenger@rideet.com` | `Passenger@1234`| PASSENGER |
-| `driver1@rideet.com`   | `Driver@1234`   | DRIVER, verified, ONLINE |
-| `driver2@rideet.com`   | `Driver@1234`   | DRIVER, verified, ONLINE |
-| `driver3@rideet.com`   | `Driver@1234`   | DRIVER, verified, ONLINE |
+| Phone             | Email                  | Password         | Role                       |
+|-------------------|------------------------|------------------|----------------------------|
+| `+251911000001`   | `passenger@rideet.com` | `Passenger@1234` | PASSENGER                  |
+| `+251911000011`   | `driver1@rideet.com`   | `Driver@1234`    | DRIVER, verified, ONLINE   |
+| `+251911000012`   | `driver2@rideet.com`   | `Driver@1234`    | DRIVER, verified, ONLINE   |
+| `+251911000013`   | `driver3@rideet.com`   | `Driver@1234`    | DRIVER, verified, ONLINE   |
+| —                 | `admin@rideet.com`     | `Admin@1234`     | ADMIN (console only)       |
 
-Sign-in is email and password — there is no phone-number login endpoint. The only six-digit code in
-the product is the boarding OTP the server issues when a driver is assigned: the passenger sees it
-on the tracking screen, and the driver must enter it, while standing near the pickup, to start the
-trip.
+There are three ways in, and every one of them is real:
+
+- **Password** — `POST /auth/login` takes *either* `email` or `phone`. Both apps send the phone, in
+  international format; the driver app prefixes the +251 dial code the user typed digits into.
+- **One-time code** — `POST /auth/otp/send` then `POST /auth/otp/verify` signs a passenger in with no
+  password at all. In the `dev` profile no SMS is sent: the response carries the live code and the
+  passenger app prints it on the screen.
+- **Password reset** — the same two steps under a separate purpose
+  (`/auth/password-reset/send`, `/auth/password-reset/confirm`), so "Forgot Password?" changes the
+  stored hash instead of opening a dead link. A reset code cannot be replayed as a login code.
+
+The boarding code is a different thing: it is the six-digit OTP the server issues when a driver is
+assigned. The passenger sees it on the tracking screen and the driver must enter it, standing near
+the pickup, to start the trip.
 
 ## How a ride actually works
 
@@ -144,8 +154,9 @@ and `matching:`.
 
 ## Onboarding and documents
 
-A new driver registers with email/OTP, files vehicle details, and uploads licence, registration and
-insurance through `POST /uploads/document` (jpg, png, webp or pdf, 10 MB max). Files are stored
+A new driver uses the Register tab of the driver app — first name, last name, email, phone in
+international format and a password — then files vehicle details, and uploads licence, registration
+and insurance through `POST /uploads/document` (jpg, png, webp or pdf, 10 MB max). Files are stored
 under `STORAGE_DIR` with random names and served back from `/api/v1/files/**`. An admin flips
 `documentsVerified`; only then may the driver go online.
 
@@ -158,8 +169,35 @@ terminal-state guards → dashboard totals) and 13 STOMP checks over a real WebS
 driver queue, round info to the passenger, assigned-driver handoff, driver ping reaching both the
 passenger and admin maps, cancellation fan-out).
 
-The harnesses are deliberately not committed; they drive the API from the outside and are meant to
-be rewritten as proper integration tests when the project needs CI.
+This pass re-ran the parts the new screens depend on, against a live `dev` instance: password login
+by phone, OTP send/verify, the whole reset round trip (send → confirm → sign in with the new
+password), registration and re-login for a brand-new driver, duplicate-phone rejection,
+`/rides/options` for all four tiers (the tier with no free car comes back with a null ETA and zero
+drivers rather than a phantom one), `/rides/estimate`, book → search → admin dispatch candidates →
+cancel, `/driver/earnings?days=7`, and the admin pricing, driver-location, daily-stats and
+reject endpoints. The matching log shows round 1 declining at 2 km and reaching a driver 3.96 km
+away on the next round, which is the intended ramp.
+
+Both Flutter apps pass `flutter analyze` and `flutter test`; the dashboard passes `npm run build`
+(type-check plus Vite). **No APK has been produced** — a Gradle Android build needs more memory than
+this machine has, so the apps are verified at the analyzer, widget-test and live-API level only.
+
+## Not built, on purpose
+
+The reference screens show a few controls this backend has no answer for, and a button that lies is
+worse than a button that is missing. Left out deliberately:
+
+- **Google / Facebook sign-in** — needs OAuth client IDs from a cloud console.
+- **SOS and in-trip chat** — an SOS that only shows a dialog, and a chat with no server-side
+  conversation, would misrepresent safety features.
+- **Driver cash-out** — no payout provider is integrated; the wallet reports the server's balance and
+  stops there.
+- **Turn-by-turn navigation** ("Turn Right: Bole Road, ETA 4 min") — there is no routing engine, so
+  the driver header shows the real pickup or drop-off address and the passenger's own ETA instead.
+- **Passenger rating on the offer card** — `RideOfferResponse` does not carry it, and inventing a
+  star value for a person who has not rated anything is not a display bug, it is a data lie.
+- **Admin "Request Access"** — self-service admin sign-up against a seeded superuser; the console is
+  reachable with the seeded account.
 
 ## Production shape
 

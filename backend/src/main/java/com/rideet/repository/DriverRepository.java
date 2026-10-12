@@ -52,6 +52,10 @@ public interface DriverRepository extends JpaRepository<Driver, Long> {
     @Query("SELECT d FROM Driver d JOIN FETCH d.user WHERE d.id = :id")
     Optional<Driver> findByIdWithUser(@Param("id") Long id);
 
+    /** Dispatch panel: the candidates' names in one query rather than one per row. */
+    @Query("SELECT d FROM Driver d JOIN FETCH d.user WHERE d.id IN :ids")
+    List<Driver> findAllWithUserByIds(@Param("ids") List<Long> ids);
+
     /**
      * Last-known position, refreshed in bulk by the scheduled location flush rather than
      * once per ping.

@@ -12,10 +12,10 @@ abstract class DriverAuthEvent extends Equatable {
 }
 
 class DriverLoginRequested extends DriverAuthEvent {
-  final String email, password;
-  DriverLoginRequested(this.email, this.password);
+  final String phone, password;
+  DriverLoginRequested(this.phone, this.password);
   @override
-  List<Object?> get props => [email, password];
+  List<Object?> get props => [phone, password];
 }
 
 class DriverRegisterRequested extends DriverAuthEvent {
@@ -92,7 +92,7 @@ class DriverAuthBloc extends Bloc<DriverAuthEvent, DriverAuthState> {
   Future<void> _onLogin(DriverLoginRequested e, Emitter<DriverAuthState> emit) async {
     emit(DriverAuthLoading());
     try {
-      final res = await _api.dio.post('/auth/login', data: {'email': e.email, 'password': e.password});
+      final res = await _api.dio.post('/auth/login', data: {'phone': e.phone, 'password': e.password});
       final data = res.data['data'] as Map<String, dynamic>;
       await _api.saveTokens(data['accessToken'] as String, data['refreshToken'] as String?);
       await _wsReady();

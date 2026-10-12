@@ -74,6 +74,20 @@ public class Driver {
     @Builder.Default
     private Double totalEarnings = 0.0;
 
+    // Offer bookkeeping: the driver app's acceptance rate is answered/(answered + declined),
+    // which only exists if the offers themselves are counted.
+    @Builder.Default
+    private Integer offersReceived = 0;
+
+    @Builder.Default
+    private Integer offersAccepted = 0;
+
+    @Builder.Default
+    private Integer offersDeclined = 0;
+
+    /** Why an admin rejected the uploaded documents, shown to the driver on the documents screen. */
+    private String verificationNote;
+
     @Column(updatable = false)
     private LocalDateTime createdAt;
 

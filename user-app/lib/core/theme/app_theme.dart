@@ -17,7 +17,7 @@ class AppTheme {
       error: errorColor,
     ),
     fontFamily: 'Poppins',
-    scaffoldBackgroundColor: surfaceColor,
+    scaffoldBackgroundColor: Colors.white,
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.white,
       foregroundColor: primaryColor,

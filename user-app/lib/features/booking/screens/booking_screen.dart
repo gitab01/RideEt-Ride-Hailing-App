@@ -4,55 +4,64 @@ import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../bloc/booking_bloc.dart';
+import '../../home/bloc/home_bloc.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// Well-known Addis Ababa pick-ups. Addresses are typed by hand elsewhere in this
 /// screen, so a rider can book without a geocoder round-trip.
-const _places = <_Place>[
-  _Place('Bole Medhanialem', 8.9950, 38.7800),
-  _Place('Bole Airport', 8.9810, 38.7960),
-  _Place('Mexico Square', 9.0100, 38.7530),
-  _Place('Piassa', 9.0340, 38.7500),
-  _Place('Kazanchis', 9.0110, 38.7580),
-  _Place('CMC', 9.0300, 38.7400),
-  _Place('Megenagna', 9.0330, 38.7640),
-  _Place('Sar Bet', 8.9740, 38.8300),
-  _Place('Ayat', 9.0570, 38.8020),
-  _Place('Gerji', 9.0230, 38.8100),
+const _places = <_Spot>[
+  _Spot('Bole Medhanialem', 8.9950, 38.7800),
+  _Spot('Bole Airport', 8.9810, 38.7960),
+  _Spot('Mexico Square', 9.0100, 38.7530),
+  _Spot('Piassa', 9.0340, 38.7500),
+  _Spot('Kazanchis', 9.0110, 38.7580),
+  _Spot('CMC', 9.0300, 38.7400),
+  _Spot('Megenagna', 9.0330, 38.7640),
+  _Spot('Sar Bet', 8.9740, 38.8300),
+  _Spot('Ayat', 9.0570, 38.8020),
+  _Spot('Gerji', 9.0230, 38.8100),
+  _Spot('Meskel Square', 9.0120, 38.7560),
 ];
 
-class _Place {
-  final String name;
+class _Spot {
+  final String label;
   final double lat;
   final double lng;
-  const _Place(this.name, this.lat, this.lng);
+  const _Spot(this.label, this.lat, this.lng);
 }
 
 class BookingScreen extends StatefulWidget {
-  const BookingScreen({super.key});
+  /// A destination handed over by a recent-place chip on the home screen.
+  final RecentPlace? initialDestination;
+
+  const BookingScreen({super.key, this.initialDestination});
 
   @override
   State<BookingScreen> createState() => _BookingScreenState();
 }
 
 class _BookingScreenState extends State<BookingScreen> {
-  String _selectedVehicleType = 'ECONOMY';
   String _selectedPaymentMethod = 'CASH';
-  _Place? _pickup;
-  _Place? _destination;
-  String? _pickupLabel;
+  String? _selectedVehicleType;
+  _Spot? _pickup;
+  _Spot? _destination;
 
-  final _vehicleTypes = const [
-    {'type': 'ECONOMY', 'icon': Icons.directions_car, 'label': 'Economy', 'desc': 'Everyday rides'},
-    {'type': 'STANDARD', 'icon': Icons.car_rental, 'label': 'Standard', 'desc': 'Newer cars, more legroom'},
-    {'type': 'PREMIUM', 'icon': Icons.star, 'label': 'Premium', 'desc': 'Business class'},
-    {'type': 'XL', 'icon': Icons.airport_shuttle, 'label': 'XL', 'desc': 'Up to 6 seats'},
-  ];
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialDestination;
+    if (initial != null) {
+      _destination = _Spot(initial.address, initial.lat, initial.lng);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadOptions());
+    }
+  }
 
-  void _estimateFare() {
-    if (_pickup == null || _destination == null) return;
-    context.read<BookingBloc>().add(EstimateFareRequested(
-          _pickup!.lat, _pickup!.lng, _destination!.lat, _destination!.lng,
+  void _loadOptions() {
+    final pickup = _pickup;
+    final destination = _destination;
+    if (pickup == null || destination == null) return;
+    context.read<BookingBloc>().add(RideOptionsRequested(
+          pickup.lat, pickup.lng, destination.lat, destination.lng,
         ));
   }
 
@@ -63,15 +72,22 @@ class _BookingScreenState extends State<BookingScreen> {
       _toast('Choose a pickup and a destination first');
       return;
     }
+    final state = context.read<BookingBloc>().state;
+    final vehicleType = _activeVehicleType(
+        state is RideOptionsLoaded ? state.options : const <Map<String, dynamic>>[]);
+    if (vehicleType == null) {
+      _toast('Pick a ride type');
+      return;
+    }
 
     context.read<BookingBloc>().add(RideRequested({
-      'pickupAddress': _pickupLabel ?? pickup.name,
+      'pickupAddress': pickup.label,
       'pickupLatitude': pickup.lat,
       'pickupLongitude': pickup.lng,
-      'destinationAddress': destination.name,
+      'destinationAddress': destination.label,
       'destinationLatitude': destination.lat,
       'destinationLongitude': destination.lng,
-      'vehicleType': _selectedVehicleType,
+      'vehicleType': vehicleType,
       'paymentMethod': _selectedPaymentMethod,
     }));
   }
@@ -100,18 +116,15 @@ class _BookingScreenState extends State<BookingScreen> {
       // Snap to the nearest landmark so the address box stays readable.
       final nearest = _nearestTo(pos.latitude, pos.longitude);
       if (!mounted) return;
-      setState(() {
-        _pickup = nearest;
-        _pickupLabel = 'Near ${nearest.name}';
-      });
-      _estimateFare();
+      setState(() => _pickup = nearest);
+      _loadOptions();
     } catch (_) {
       if (mounted) _toast('Could not read your location');
     }
   }
 
-  static _Place _nearestTo(double lat, double lng) {
-    _Place best = _places.first;
+  static _Spot _nearestTo(double lat, double lng) {
+    _Spot best = _places.first;
     double bestKm = double.infinity;
     for (final place in _places) {
       final km = Geolocator.distanceBetween(lat, lng, place.lat, place.lng) / 1000;
@@ -123,8 +136,8 @@ class _BookingScreenState extends State<BookingScreen> {
     return best;
   }
 
-  Future<void> _pickPlace({required bool isPickup}) async {
-    final chosen = await showModalBottomSheet<_Place>(
+  Future<void> _pickSpot({required bool isPickup}) async {
+    final chosen = await showModalBottomSheet<_Spot>(
       context: context,
       backgroundColor: Colors.white,
       builder: (context) => SafeArea(
@@ -136,12 +149,12 @@ class _BookingScreenState extends State<BookingScreen> {
               child: Text(isPickup ? 'Where from?' : 'Where to?',
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ),
-            ..._places.map((place) => ListTile(
+            ..._places.map((spot) => ListTile(
                   leading: Icon(isPickup ? Icons.trip_origin : Icons.place,
                       color: AppTheme.primaryColor),
-                  title: Text(place.name),
-                  subtitle: Text('${place.lat.toStringAsFixed(4)}, ${place.lng.toStringAsFixed(4)}'),
-                  onTap: () => Navigator.pop(context, place),
+                  title: Text(spot.label),
+                  subtitle: Text('${spot.lat.toStringAsFixed(4)}, ${spot.lng.toStringAsFixed(4)}'),
+                  onTap: () => Navigator.pop(context, spot),
                 )),
           ],
         ),
@@ -151,12 +164,27 @@ class _BookingScreenState extends State<BookingScreen> {
     setState(() {
       if (isPickup) {
         _pickup = chosen;
-        _pickupLabel = null;
       } else {
         _destination = chosen;
       }
     });
-    _estimateFare();
+    _loadOptions();
+  }
+
+  /// The rider's explicit choice while it is still priced for this trip, otherwise the
+  /// first tier with a car nearby. Derived instead of stored so a stale selection from a
+  /// previous trip cannot be booked.
+  String? _activeVehicleType(List<Map<String, dynamic>> options) {
+    if (options.isEmpty) return null;
+    final types = options.map((option) => option['vehicleType'] as String?).toList();
+    if (_selectedVehicleType != null && types.contains(_selectedVehicleType)) {
+      return _selectedVehicleType;
+    }
+    final reachable = options.firstWhere(
+      (option) => option['pickupEtaMinutes'] != null,
+      orElse: () => options.first,
+    );
+    return reachable['vehicleType'] as String?;
   }
 
   @override
@@ -176,8 +204,14 @@ class _BookingScreenState extends State<BookingScreen> {
           }
         },
         builder: (context, state) {
-          final estimate = state is FareEstimated ? state.estimate : null;
+          final options = state is RideOptionsLoaded ? state.options : const <Map<String, dynamic>>[];
+          final activeType = _activeVehicleType(options);
           final busy = state is BookingLoading;
+
+          final selected = options.firstWhere(
+            (option) => option['vehicleType'] == activeType,
+            orElse: () => const {},
+          );
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
@@ -187,27 +221,33 @@ class _BookingScreenState extends State<BookingScreen> {
                 _LocationCard(
                   pickup: _pickup,
                   destination: _destination,
-                  pickupLabel: _pickupLabel,
-                  onPickupTap: () => _pickPlace(isPickup: true),
-                  onDestinationTap: () => _pickPlace(isPickup: false),
+                  onPickupTap: () => _pickSpot(isPickup: true),
+                  onDestinationTap: () => _pickSpot(isPickup: false),
                   onUseCurrentLocation: _useCurrentLocation,
                 ),
-                if (estimate != null) ...[
-                  const SizedBox(height: 16),
-                  _EstimateSummary(estimate: estimate),
-                ],
                 const SizedBox(height: 20),
                 const Text('Choose Ride',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 12),
-                ..._vehicleTypes.map((v) => _VehicleTypeCard(
-                      type: v['type'] as String,
-                      icon: v['icon'] as IconData,
-                      label: v['label'] as String,
-                      desc: v['desc'] as String,
-                      selected: _selectedVehicleType == v['type'],
-                      onTap: () => setState(() => _selectedVehicleType = v['type'] as String),
-                    )),
+                if (busy && options.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (options.isEmpty)
+                  Text(
+                    _pickup == null || _destination == null
+                        ? 'Select a pickup and a destination to see prices.'
+                        : 'No fares available for this trip.',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                  )
+                else
+                  ...options.map((option) => _RideOptionCard(
+                        option: option,
+                        selected: option['vehicleType'] == activeType,
+                        onTap: () =>
+                            setState(() => _selectedVehicleType = option['vehicleType'] as String?),
+                      )),
                 const SizedBox(height: 20),
                 const Text('Payment Method',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
@@ -229,12 +269,14 @@ class _BookingScreenState extends State<BookingScreen> {
                 ),
                 const SizedBox(height: 32),
                 ElevatedButton(
-                  onPressed: busy ? null : _requestRide,
+                  onPressed: busy || activeType == null ? null : _requestRide,
                   child: busy
                       ? const SizedBox(
                           height: 20, width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('Request Ride'),
+                      : Text(selected['displayName'] == null
+                          ? 'Request Ride'
+                          : 'Confirm ${selected['displayName']}'),
                 ),
                 const SizedBox(height: 24),
               ],
@@ -247,9 +289,8 @@ class _BookingScreenState extends State<BookingScreen> {
 }
 
 class _LocationCard extends StatelessWidget {
-  final _Place? pickup;
-  final _Place? destination;
-  final String? pickupLabel;
+  final _Spot? pickup;
+  final _Spot? destination;
   final VoidCallback onPickupTap;
   final VoidCallback onDestinationTap;
   final Future<void> Function() onUseCurrentLocation;
@@ -257,7 +298,7 @@ class _LocationCard extends StatelessWidget {
   const _LocationCard({
     required this.pickup, required this.destination,
     required this.onPickupTap, required this.onDestinationTap,
-    required this.onUseCurrentLocation, this.pickupLabel,
+    required this.onUseCurrentLocation,
   });
 
   @override
@@ -284,15 +325,15 @@ class _LocationCard extends StatelessWidget {
               Expanded(
                 child: Column(
                   children: [
-                    _PlaceRow(
+                    _SpotRow(
                       hint: 'Pickup location',
-                      value: pickup == null ? null : (pickupLabel ?? pickup!.name),
+                      value: pickup?.label,
                       onTap: onPickupTap,
                     ),
                     Divider(color: Colors.grey.shade200),
-                    _PlaceRow(
+                    _SpotRow(
                       hint: 'Destination',
-                      value: destination?.name,
+                      value: destination?.label,
                       onTap: onDestinationTap,
                     ),
                   ],
@@ -303,7 +344,7 @@ class _LocationCard extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
-              onPressed: () => onUseCurrentLocation(),
+              onPressed: onUseCurrentLocation,
               icon: const Icon(Icons.my_location, size: 18),
               label: const Text('Use my location'),
             ),
@@ -314,12 +355,12 @@ class _LocationCard extends StatelessWidget {
   }
 }
 
-class _PlaceRow extends StatelessWidget {
+class _SpotRow extends StatelessWidget {
   final String hint;
   final String? value;
   final VoidCallback onTap;
 
-  const _PlaceRow({required this.hint, required this.onTap, this.value});
+  const _SpotRow({required this.hint, required this.onTap, this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -340,58 +381,24 @@ class _PlaceRow extends StatelessWidget {
   }
 }
 
-class _EstimateSummary extends StatelessWidget {
-  final Map<String, dynamic> estimate;
-  const _EstimateSummary({required this.estimate});
-
-  @override
-  Widget build(BuildContext context) {
-    final fare = (estimate['estimatedFare'] as num?)?.toDouble() ?? 0;
-    final km = (estimate['distanceKm'] as num?)?.toDouble() ?? 0;
-    final minutes = (estimate['durationMinutes'] as num?)?.toInt() ?? 0;
-    final surge = (estimate['surgeMultiplier'] as num?)?.toDouble() ?? 1;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppTheme.surfaceColor,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('$km km • $minutes min',
-                  style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
-              if (surge > 1)
-                Text('High demand nearby',
-                    style: const TextStyle(
-                        fontSize: 12, color: AppTheme.errorColor, fontWeight: FontWeight.w600)),
-            ],
-          ),
-          Text('ETB ${fare.toStringAsFixed(2)}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-}
-
-class _VehicleTypeCard extends StatelessWidget {
-  final String type, label, desc;
-  final IconData icon;
+class _RideOptionCard extends StatelessWidget {
+  final Map<String, dynamic> option;
   final bool selected;
   final VoidCallback onTap;
 
-  const _VehicleTypeCard({
-    required this.type, required this.icon, required this.label,
-    required this.desc, required this.selected, required this.onTap,
+  const _RideOptionCard({
+    required this.option, required this.selected, required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final displayName = option['displayName']?.toString() ?? 'RideEt';
+    final fare = (option['estimatedFare'] as num?)?.toDouble();
+    final eta = (option['pickupEtaMinutes'] as num?)?.toInt();
+    final km = (option['distanceKm'] as num?)?.toDouble();
+    final minutes = (option['durationMinutes'] as num?)?.toInt();
+    final surge = (option['surgeMultiplier'] as num?)?.toDouble() ?? 1;
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -408,22 +415,45 @@ class _VehicleTypeCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(icon, color: selected ? AppTheme.primaryColor : Colors.grey),
+            Icon(Icons.directions_car,
+                color: selected ? AppTheme.primaryColor : Colors.grey),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label,
+                  Text(displayName,
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: selected ? AppTheme.primaryColor : Colors.black)),
-                  Text(desc, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                  const SizedBox(height: 2),
+                  Text(
+                    eta == null
+                        ? 'No cars available in this tier'
+                        : 'Arrives in $eta min'
+                            '${km == null ? '' : ' • ${km.toStringAsFixed(1)} km'}'
+                            '${minutes == null ? '' : ' • $minutes min ride'}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                  if (surge > 1)
+                    Text('High demand • ${surge.toStringAsFixed(1)}x',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.errorColor,
+                            fontWeight: FontWeight.w600)),
                 ],
               ),
             ),
-            if (selected)
-              const Icon(Icons.check_circle, color: AppTheme.primaryColor),
+            const SizedBox(width: 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(fare == null ? '-' : 'ETB ${fare.toStringAsFixed(0)}',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                if (selected)
+                  const Icon(Icons.check_circle, color: AppTheme.primaryColor, size: 18),
+              ],
+            ),
           ],
         ),
       ),

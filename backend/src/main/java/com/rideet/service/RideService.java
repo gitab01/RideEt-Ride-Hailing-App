@@ -5,12 +5,15 @@ import com.rideet.domain.entity.Driver;
 import com.rideet.domain.entity.DriverLocation;
 import com.rideet.domain.entity.Ride;
 import com.rideet.domain.entity.User;
+import com.rideet.domain.entity.VehicleTier;
 import com.rideet.domain.enums.DriverStatus;
 import com.rideet.domain.enums.PaymentMethod;
 import com.rideet.domain.enums.RideStatus;
+import com.rideet.domain.enums.VehicleType;
 import com.rideet.dto.request.RatingRequest;
 import com.rideet.dto.request.RideRequest;
 import com.rideet.dto.response.FareEstimateResponse;
+import com.rideet.dto.response.RideOptionResponse;
 import com.rideet.dto.response.RideResponse;
 import com.rideet.exception.BadRequestException;
 import com.rideet.exception.ResourceNotFoundException;
@@ -36,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -74,6 +78,9 @@ public class RideService {
     @Value("${fare.max-deviation-ratio:0.25}")
     private double maxDeviationRatio;
 
+    @Value("${matching.max-radius-km:12.0}")
+    private double searchRadiusKm;
+
     @Transactional
     public RideResponse requestRide(Long passengerUserId, RideRequest request) {
         User passenger = userRepository.findById(passengerUserId)
@@ -82,11 +89,12 @@ public class RideService {
         rideRepository.findFirstByPassengerIdAndStatusIn(passengerIdOf(passenger), ACTIVE_STATUSES)
                 .ifPresent(r -> { throw new BadRequestException("You already have an active ride"); });
 
+        VehicleType chosen = request.getVehicleType() != null ? request.getVehicleType() : VehicleType.ECONOMY;
         double distance = fareCalculationService.calculateDistanceKm(
                 request.getPickupLatitude(), request.getPickupLongitude(),
                 request.getDestinationLatitude(), request.getDestinationLongitude());
         int duration = fareCalculationService.estimateDurationMinutes(distance);
-        FareEstimateResponse estimate = fareCalculationService.calculateFare(distance, duration);
+        FareEstimateResponse estimate = fareCalculationService.calculateFare(distance, duration, chosen);
 
         // Nothing debits wallet_balance yet, so accepting it here would quietly bill the
         // ride through the card path instead.
@@ -102,7 +110,7 @@ public class RideService {
                 .destinationAddress(request.getDestinationAddress())
                 .destinationLatitude(request.getDestinationLatitude())
                 .destinationLongitude(request.getDestinationLongitude())
-                .vehicleType(request.getVehicleType())
+                .vehicleType(chosen)
                 .paymentMethod(request.getPaymentMethod())
                 .estimatedFare(estimate.getEstimatedFare())
                 .distanceKm(Math.round(distance * 100.0) / 100.0)
@@ -138,6 +146,10 @@ public class RideService {
     @Transactional
     public void declineOffer(Long driverId, Long rideId) {
         matchingService.decline(driverId, rideId);
+        driverRepository.findById(driverId).ifPresent(d -> {
+            d.setOffersDeclined(d.getOffersDeclined() + 1);
+            driverRepository.save(d);
+        });
     }
 
     @Transactional
@@ -186,7 +198,7 @@ public class RideService {
         ActualTrip actual = measureActualTrip(ride, driverId, endedAt);
 
         FareEstimateResponse recomputed = fareCalculationService.calculateFare(
-                actual.distanceKm(), actual.durationMinutes());
+                actual.distanceKm(), actual.durationMinutes(), ride.getVehicleType());
         double finalFare = capToFareWindow(recomputed.getEstimatedFare(), ride.getEstimatedFare());
 
         ride.setActualFare(finalFare);
@@ -279,6 +291,38 @@ public class RideService {
         return toResponse(ride, actorUserId);
     }
 
+    /**
+     * An admin ending a ride that neither party has cancelled — the dispatch console's last
+     * resort. Same rules as a participant cancellation: only a stage that may be cancelled is,
+     * and a driver already assigned is released instead of being left tied to a dead trip.
+     */
+    @Transactional
+    public RideResponse cancelByAdmin(Long rideId, String reason) {
+        Ride ride = rideRepository.findById(rideId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ride not found"));
+        if (!RideStateMachine.allowedFrom(ride.getStatus()).contains(RideStatus.CANCELLED)) {
+            throw new BadRequestException("Ride cannot be cancelled at this stage");
+        }
+
+        matchingService.closeRound(rideId, "ADMIN_CANCELLED");
+        Long driverUserId = ride.getDriver() == null ? null : ride.getDriver().getUser().getId();
+        if (ride.getDriver() != null) releaseDriver(ride);
+
+        stateMachine.transition(ride, RideStatus.CANCELLED, RideStateMachine.ACTOR_SYSTEM, reason);
+        ride.setCancelledAt(LocalDateTime.now());
+        ride.setCancellationReason(reason);
+        ride.setCancelledBy("ADMIN");
+        rideRepository.save(ride);
+
+        Map<String, Object> cancelled = Map.of("by", "ADMIN", "reason", reason);
+        rideWebSocketService.toPassenger(ride.getPassenger().getId(), "RIDE_CANCELLED", rideId, cancelled);
+        if (driverUserId != null) {
+            rideWebSocketService.toDriver(driverUserId, "RIDE_CANCELLED", rideId, cancelled);
+        }
+        log.info("Ride {} cancelled by admin: {}", rideId, reason);
+        return toResponse(ride, null);
+    }
+
     /** Put a driver back on the market and stop them being offered work they cannot take. */
     private Driver releaseDriver(Ride ride) {
         Driver driver = ride.getDriver();
@@ -339,6 +383,40 @@ public class RideService {
         double distance = fareCalculationService.calculateDistanceKm(pickupLat, pickupLng, destLat, destLng);
         int duration = fareCalculationService.estimateDurationMinutes(distance);
         return fareCalculationService.calculateFare(distance, duration);
+    }
+
+    /**
+     * Everything the vehicle picker shows: one priced option per active tier, each with the pickup
+     * ETA of the closest online driver who actually drives that tier — the same filter the matching
+     * engine applies, so the quoted wait is the wait the rider would really get. A tier with nobody
+     * inside the search radius comes back with a null ETA rather than an invented one.
+     */
+    public List<RideOptionResponse> estimateOptions(double pickupLat, double pickupLng,
+                                                    double destLat, double destLng) {
+        double distance = fareCalculationService.calculateDistanceKm(pickupLat, pickupLng, destLat, destLng);
+        int duration = fareCalculationService.estimateDurationMinutes(distance);
+
+        List<RideOptionResponse> options = new ArrayList<>();
+        for (VehicleTier tier : fareCalculationService.activeTiers()) {
+            VehicleType type = tier.getVehicleType();
+            List<DriverLocationIndex.Candidate> nearby =
+                    locationIndex.nearest(pickupLat, pickupLng, searchRadiusKm, type, null, 0);
+            FareEstimateResponse fare = fareCalculationService.calculateFare(distance, duration, type);
+            Double nearestKm = nearby.isEmpty() ? null : round2(nearby.get(0).distanceKm());
+
+            options.add(RideOptionResponse.builder()
+                    .vehicleType(type)
+                    .displayName(tier.getDisplayName())
+                    .estimatedFare(fare.getEstimatedFare())
+                    .distanceKm(fare.getDistanceKm())
+                    .durationMinutes(duration)
+                    .surgeMultiplier(tier.getSurgeMultiplier())
+                    .pickupEtaMinutes(nearestKm == null ? null : fareCalculationService.pickupMinutes(nearestKm))
+                    .distanceToNearestKm(nearestKm)
+                    .driversAvailable(nearby.size())
+                    .build());
+        }
+        return options;
     }
 
     @Transactional(readOnly = true)

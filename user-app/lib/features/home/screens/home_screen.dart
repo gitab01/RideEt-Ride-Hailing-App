@@ -5,6 +5,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../booking/bloc/booking_bloc.dart';
+import '../bloc/home_bloc.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// Addis Ababa, where RideEt operates and where the emulator has no fix.
@@ -19,39 +20,38 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   GoogleMapController? _mapController;
-  LatLng _currentLocation = _addisCenter;
-  bool _locationLoaded = false;
+  LatLng _cameraTarget = _addisCenter;
+  bool _locating = false;
 
   @override
   void initState() {
     super.initState();
     _loadLocation();
     context.read<BookingBloc>().add(ActiveRideLoaded());
+    context.read<HomeBloc>().add(HomeLoadRequested());
   }
 
   Future<void> _loadLocation() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
-
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return;
-    }
-
+    setState(() => _locating = true);
     try {
-      final position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
+      if (!await Geolocator.isLocationServiceEnabled()) return;
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+      if (permission == LocationPermission.deniedForever) return;
+
+      final position =
+          await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       if (!mounted) return;
-      setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
-        _locationLoaded = true;
-      });
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(_currentLocation, 15),
-      );
+      setState(() => _cameraTarget = LatLng(position.latitude, position.longitude));
+      _mapController?.animateCamera(CameraUpdate.newLatLngZoom(_cameraTarget, 15));
     } catch (_) {
-      // No fix (emulator, denied permission): the Addis default stays on screen.
+      // No fix (emulator, timeout): the Addis default stays on screen.
+    } finally {
+      if (mounted) setState(() => _locating = false);
     }
   }
 
@@ -60,66 +60,62 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // Map
           GoogleMap(
-            onMapCreated: (controller) => _mapController = controller,
-            initialCameraPosition: CameraPosition(
-              target: _locationLoaded ? _currentLocation : const LatLng(0, 0),
-              zoom: 15,
-            ),
+            onMapCreated: (controller) {
+              _mapController = controller;
+              controller.animateCamera(CameraUpdate.newLatLngZoom(_cameraTarget, 15));
+            },
+            initialCameraPosition: CameraPosition(target: _cameraTarget, zoom: 15),
             myLocationEnabled: true,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             mapToolbarEnabled: false,
           ),
 
-          // Top greeting card
+          // Greeting, on a solid card so the map stays readable underneath.
           Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(20, 56, 20, 16),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.white, Colors.transparent],
+            top: 0, left: 0, right: 0,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 52, 16, 0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: const [BoxShadow(blurRadius: 10, color: Colors.black12)],
                 ),
-              ),
-              child: Row(
-                children: [
-                  const CircleAvatar(
-                    backgroundColor: AppTheme.primaryColor,
-                    child: Icon(Icons.person, color: Colors.white),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Good morning 👋',
-                            style: TextStyle(color: Colors.grey, fontSize: 13)),
-                        Text('Where are you going?',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 16)),
-                      ],
+                child: Row(
+                  children: [
+                    const CircleAvatar(
+                      backgroundColor: AppTheme.primaryColor,
+                      child: Icon(Icons.person, color: Colors.white),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () => context.go('/notifications'),
-                    icon: const Icon(Icons.notifications_outlined),
-                  ),
-                ],
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Good morning',
+                              style: TextStyle(color: Colors.grey, fontSize: 13)),
+                          Text('Where are you going?',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 16)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => context.go('/notifications'),
+                      icon: const Icon(Icons.notifications_outlined),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
 
           // Bottom booking panel
           Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
+            bottom: 0, left: 0, right: 0,
             child: Container(
               padding: const EdgeInsets.all(20),
               decoration: const BoxDecoration(
@@ -139,61 +135,45 @@ class _HomeScreenState extends State<HomeScreen> {
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-                  // Search bar
                   GestureDetector(
-                    onTap: () => context.go('/booking'),
+                    onTap: () => context.push('/booking'),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                       decoration: BoxDecoration(
                         color: AppTheme.surfaceColor,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.grey.shade200),
                       ),
-                      child: Row(
+                      child: const Row(
                         children: [
-                          const Icon(Icons.search, color: Colors.grey),
-                          const SizedBox(width: 12),
+                          Icon(Icons.search, color: Colors.grey),
+                          SizedBox(width: 12),
                           Text('Where to?',
                               style: TextStyle(
-                                  color: Colors.grey.shade600, fontSize: 16)),
+                                  color: Colors.grey, fontSize: 16)),
                         ],
                       ),
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Quick destinations
-                  Row(
-                    children: [
-                      _QuickDestButton(
-                          icon: Icons.home_outlined,
-                          label: 'Home',
-                          onTap: () => context.go('/booking')),
-                      const SizedBox(width: 12),
-                      _QuickDestButton(
-                          icon: Icons.work_outline,
-                          label: 'Work',
-                          onTap: () => context.go('/booking')),
-                      const SizedBox(width: 12),
-                      _QuickDestButton(
-                          icon: Icons.add,
-                          label: 'Add',
-                          onTap: () {}),
-                    ],
-                  ),
+                  const _RecentChips(),
                 ],
               ),
             ),
           ),
 
-          // My location button
           Positioned(
             right: 16,
-            bottom: 220,
+            bottom: 232,
             child: FloatingActionButton.small(
-              onPressed: _loadLocation,
+              onPressed: _locating ? null : _loadLocation,
               backgroundColor: Colors.white,
-              child: const Icon(Icons.my_location, color: AppTheme.primaryColor),
+              child: _locating
+                  ? const SizedBox(
+                      height: 18, width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.my_location, color: AppTheme.primaryColor),
             ),
           ),
         ],
@@ -202,36 +182,58 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _QuickDestButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _QuickDestButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
+/// Places this rider has already been taken to; tapping one books the return trip.
+class _RecentChips extends StatelessWidget {
+  const _RecentChips();
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceColor,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.grey.shade200),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: AppTheme.primaryColor),
-            const SizedBox(width: 6),
-            Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-          ],
-        ),
-      ),
+    return BlocBuilder<HomeBloc, HomeState>(
+      builder: (context, state) {
+        final places = state is HomeLoaded ? state.recentPlaces : const <RecentPlace>[];
+        if (places.isEmpty) {
+          return Text(
+            'No recent destinations yet',
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          );
+        }
+        return SizedBox(
+          height: 38,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: places.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (context, index) {
+              final place = places[index];
+              return GestureDetector(
+                onTap: () => context.push('/booking', extra: place),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceColor,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.history, size: 16, color: AppTheme.primaryColor),
+                      const SizedBox(width: 6),
+                      Text(
+                        place.address.length > 24
+                            ? '${place.address.substring(0, 24)}…'
+                            : place.address,
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
