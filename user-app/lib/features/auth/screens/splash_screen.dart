@@ -92,7 +92,7 @@ class _SplashScreenState extends State<SplashScreen>
                   Text(
                     'Your ride, your way',
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
+                      color: Colors.white.withValues(alpha: 0.7),
                       fontSize: 16,
                     ),
                   ),

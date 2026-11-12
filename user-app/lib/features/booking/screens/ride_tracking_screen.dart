@@ -168,7 +168,7 @@ class _RideTrackingScreenState extends State<RideTrackingScreen> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: AppTheme.primaryColor.withOpacity(0.1),
+                          color: AppTheme.primaryColor.withValues(alpha: 0.1),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.directions_car, color: AppTheme.primaryColor),
@@ -340,7 +340,7 @@ class _DriverInfoCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: AppTheme.accentColor.withOpacity(0.15),
+                color: AppTheme.accentColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: AppTheme.accentColor),
               ),

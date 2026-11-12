@@ -83,7 +83,7 @@ class _RideCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [const BoxShadow(blurRadius: 4, color: Colors.black12)],
+        boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black12)],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -95,7 +95,7 @@ class _RideCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: _statusColor(ride['status']).withOpacity(0.12),
+                  color: _statusColor(ride['status']).withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(

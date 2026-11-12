@@ -100,7 +100,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
-                      boxShadow: [const BoxShadow(blurRadius: 8, color: Colors.black12)],
+                      boxShadow: const [BoxShadow(blurRadius: 8, color: Colors.black12)],
                     ),
                     child: Column(
                       children: [
@@ -132,7 +132,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: AppTheme.errorColor.withOpacity(0.08),
+                        color: AppTheme.errorColor.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: AppTheme.errorColor),
                       ),
@@ -173,7 +173,7 @@ class _StatusChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(label,

@@ -308,7 +308,7 @@ class _LocationCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [const BoxShadow(blurRadius: 8, color: Colors.black12)],
+        boxShadow: const [BoxShadow(blurRadius: 8, color: Colors.black12)],
       ),
       child: Column(
         children: [
@@ -406,7 +406,7 @@ class _RideOptionCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: selected ? AppTheme.primaryColor.withOpacity(0.08) : Colors.white,
+          color: selected ? AppTheme.primaryColor.withValues(alpha: 0.08) : Colors.white,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: selected ? AppTheme.primaryColor : Colors.grey.shade200,

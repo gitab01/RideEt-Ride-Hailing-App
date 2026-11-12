@@ -100,9 +100,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             color: AppTheme.accentColor, size: 28),
                       ),
                       const SizedBox(width: 12),
-                      Column(
+                      const Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
-                        children: const [
+                        children: [
                           Text('RideEt',
                               style: TextStyle(
                                   fontSize: 24,
