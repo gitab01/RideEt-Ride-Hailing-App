@@ -88,7 +88,9 @@ export default function RidesPage() {
                     </td>
                     <td className="py-3 pr-4"><StatusBadge status={r.status} /></td>
                     <td className="py-3 pr-4 font-medium">
-                      {(r.actualFare ?? r.estimatedFare ?? 0).toFixed(2)} ETB
+                      {r.actualFare != null ? `${r.actualFare.toFixed(2)} ETB`
+                        : r.status === 'CANCELLED' || r.status === 'NO_DRIVER_FOUND' ? '—'
+                        : <span className="text-gray-500">{(r.estimatedFare ?? 0).toFixed(2)} ETB est.</span>}
                     </td>
                     <td className="py-3 pr-4 text-gray-500 text-xs">
                       {r.requestedAt ? new Date(r.requestedAt).toLocaleDateString() : '-'}
