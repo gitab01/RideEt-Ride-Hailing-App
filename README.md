@@ -178,9 +178,12 @@ cancel, `/driver/earnings?days=7`, and the admin pricing, driver-location, daily
 reject endpoints. The matching log shows round 1 declining at 2 km and reaching a driver 3.96 km
 away on the next round, which is the intended ramp.
 
-Both Flutter apps pass `flutter analyze` and `flutter test`; the dashboard passes `npm run build`
-(type-check plus Vite). **No APK has been produced** — a Gradle Android build needs more memory than
-this machine has, so the apps are verified at the analyzer, widget-test and live-API level only.
+`user-app` analyses clean and passes 5 widget tests (onboarding paging, the default +251 dial code,
+and the three sign-in guards that stop the app sending a number or password the server would reject);
+`driver-app` passes 4 (phone and password guards, the masked password toggle, the Register tab). The
+dashboard passes `npm run build` (type-check plus Vite). **No APK has been produced** — a Gradle
+Android build needs more memory than this machine has, so the apps are verified at the analyzer,
+widget-test and live-API level only.
 
 ## Not built, on purpose
 
