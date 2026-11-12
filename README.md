@@ -185,6 +185,14 @@ dashboard passes `npm run build` (type-check plus Vite). **No APK has been produ
 Android build needs more memory than this machine has, so the apps are verified at the analyzer,
 widget-test and live-API level only.
 
+`mvn test` runs ten committed unit tests over the two rules everything else trusts and no single
+endpoint can show on its own: the ride transition table (a finished ride has no outgoing edge, a
+failed search cannot be claimed late, a driver may back out of an assignment but nobody may extend
+a trip) and the fare rules (each tier prices itself, surge multiplies base and distance but never
+the booking fee, the minimum floors a stub trip, and an edited rate only reaches quotes once the
+cache is dropped — which is what the admin Fares page does on save). The outside REST and STOMP
+harnesses are still not committed: they drive a live server and belong in a CI job with a database.
+
 ## Not built, on purpose
 
 The reference screens show a few controls this backend has no answer for, and a button that lies is
