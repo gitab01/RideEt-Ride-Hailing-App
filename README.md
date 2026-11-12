@@ -193,6 +193,12 @@ the booking fee, the minimum floors a stub trip, and an edited rate only reaches
 cache is dropped — which is what the admin Fares page does on save). The outside REST and STOMP
 harnesses are still not committed: they drive a live server and belong in a CI job with a database.
 
+The dashboard was also driven in a real browser against the running API, with the token stored under
+`admin_token` exactly as the auth store does it. All six routes mount and render server data - the
+dashboard counts, the drivers table with plates and ratings, the fare tiers, the live map with its
+tier chips and unassigned queue, the rides table, the users table - and none of them throws. The only
+console output on any page is React Router's two v7 future-flag notices.
+
 ## Not built, on purpose
 
 The reference screens show a few controls this backend has no answer for, and a button that lies is
